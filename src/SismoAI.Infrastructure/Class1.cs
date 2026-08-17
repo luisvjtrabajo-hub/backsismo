@@ -632,7 +632,7 @@ public sealed class IrisDataSource(HttpClient httpClient) : IEarthquakeDataSourc
         if ((int)response.StatusCode == 410)
         {
             throw new InvalidOperationException(
-                "El endpoint EarthScope/IRIS consultado para eventos sísmicos responde 410 Gone. Se requiere una ruta oficial vigente para habilitar esta fuente.");
+                "EarthScope retiró oficialmente su servicio FDSN event en 2026 y este endpoint responde 410 Gone. No existe un mirror vigente en EarthScope para esta fuente; las alternativas oficiales publicadas por EarthScope son ISC y NEIC/USGS.");
         }
 
         response.EnsureSuccessStatusCode();
