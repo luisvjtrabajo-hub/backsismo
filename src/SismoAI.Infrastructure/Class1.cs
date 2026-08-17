@@ -239,10 +239,16 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
 
     public async Task<Dictionary<string, DateTimeOffset?>> GetLatestOriginBySourceAsync(CancellationToken cancellationToken)
     {
-        return await dbContext.EarthquakeEvents
+        var items = await dbContext.EarthquakeEvents
+            .AsNoTracking()
+            .Select(x => new { x.Source, x.OriginTimeUtc })
+            .ToListAsync(cancellationToken);
+
+        return items
             .GroupBy(x => x.Source)
-            .Select(x => new { x.Key, Latest = x.Max(y => y.OriginTimeUtc) })
-            .ToDictionaryAsync(x => x.Key, x => (DateTimeOffset?)x.Latest, cancellationToken);
+            .ToDictionary(
+                group => group.Key,
+                group => (DateTimeOffset?)group.Max(x => x.OriginTimeUtc));
     }
 
     public async Task<AnomalySnapshot?> GetLatestSnapshotAsync(CancellationToken cancellationToken)
