@@ -18,6 +18,7 @@ WORKDIR /app
 
 ENV ASPNETCORE_URLS=http://0.0.0.0:10000
 ENV ASPNETCORE_ENVIRONMENT=Production
+ENV App__UseHttpsRedirection=false
 
 COPY --from=build /app/publish .
 

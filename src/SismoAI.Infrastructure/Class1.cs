@@ -212,6 +212,18 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
 
     public async Task<IReadOnlyList<EarthquakeEvent>> GetRecentAsync(int count, CancellationToken cancellationToken)
     {
+        if (dbContext.Database.IsSqlite())
+        {
+            var items = await dbContext.EarthquakeEvents
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+
+            return items
+                .OrderByDescending(x => x.OriginTimeUtc)
+                .Take(count)
+                .ToList();
+        }
+
         return await dbContext.EarthquakeEvents
             .OrderByDescending(x => x.OriginTimeUtc)
             .Take(count)
@@ -221,6 +233,18 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
 
     public async Task<IReadOnlyList<EarthquakeEvent>> GetSinceAsync(DateTimeOffset sinceUtc, CancellationToken cancellationToken)
     {
+        if (dbContext.Database.IsSqlite())
+        {
+            var items = await dbContext.EarthquakeEvents
+                .Where(x => x.OriginTimeUtc >= sinceUtc)
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+
+            return items
+                .OrderByDescending(x => x.OriginTimeUtc)
+                .ToList();
+        }
+
         return await dbContext.EarthquakeEvents
             .Where(x => x.OriginTimeUtc >= sinceUtc)
             .OrderByDescending(x => x.OriginTimeUtc)
@@ -230,6 +254,18 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
 
     public async Task<IReadOnlyList<EarthquakeEvent>> GetBetweenAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken cancellationToken)
     {
+        if (dbContext.Database.IsSqlite())
+        {
+            var items = await dbContext.EarthquakeEvents
+                .Where(x => x.OriginTimeUtc >= fromUtc && x.OriginTimeUtc <= toUtc)
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+
+            return items
+                .OrderBy(x => x.OriginTimeUtc)
+                .ToList();
+        }
+
         return await dbContext.EarthquakeEvents
             .Where(x => x.OriginTimeUtc >= fromUtc && x.OriginTimeUtc <= toUtc)
             .OrderBy(x => x.OriginTimeUtc)
@@ -253,6 +289,17 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
 
     public async Task<AnomalySnapshot?> GetLatestSnapshotAsync(CancellationToken cancellationToken)
     {
+        if (dbContext.Database.IsSqlite())
+        {
+            var items = await dbContext.AnomalySnapshots
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+
+            return items
+                .OrderByDescending(x => x.CapturedAtUtc)
+                .FirstOrDefault();
+        }
+
         return await dbContext.AnomalySnapshots
             .OrderByDescending(x => x.CapturedAtUtc)
             .AsNoTracking()
@@ -261,6 +308,18 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
 
     public async Task<IReadOnlyList<AnomalySnapshot>> GetRecentSnapshotsAsync(int count, CancellationToken cancellationToken)
     {
+        if (dbContext.Database.IsSqlite())
+        {
+            var items = await dbContext.AnomalySnapshots
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+
+            return items
+                .OrderByDescending(x => x.CapturedAtUtc)
+                .Take(count)
+                .ToList();
+        }
+
         return await dbContext.AnomalySnapshots
             .OrderByDescending(x => x.CapturedAtUtc)
             .Take(count)
