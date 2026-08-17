@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Xml.Linq;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -85,15 +86,15 @@ public static class DependencyInjection
             client.Timeout = TimeSpan.FromSeconds(30);
         });
 
-        services.AddHttpClient<IrisDataSource>(client =>
+        services.AddHttpClient<IscDataSource>(client =>
         {
-            client.BaseAddress = new Uri("https://service.earthscope.org/");
-            client.Timeout = TimeSpan.FromSeconds(30);
+            client.BaseAddress = new Uri("https://www.isc.ac.uk/");
+            client.Timeout = TimeSpan.FromSeconds(45);
         });
 
         services.AddScoped<IEarthquakeDataSource, UsgsDataSource>();
         services.AddScoped<IEarthquakeDataSource, IgpDataSource>();
-        services.AddScoped<IEarthquakeDataSource, IrisDataSource>();
+        services.AddScoped<IEarthquakeDataSource, IscDataSource>();
 
         if (configuration.GetValue("Ingestion:Enabled", true))
         {
@@ -621,21 +622,147 @@ public sealed class IgpDataSource(HttpClient httpClient) : IEarthquakeDataSource
     }
 }
 
-public sealed class IrisDataSource(HttpClient httpClient) : IEarthquakeDataSource
+public sealed class IscDataSource(HttpClient httpClient) : IEarthquakeDataSource
 {
-    public string Name => "IRIS";
-    private const string BaseUrl = "https://service.earthscope.org/";
+    public string Name => "ISC";
+    private const string BaseUrl = "https://www.isc.ac.uk/";
+    private static readonly XNamespace QuakeMlNamespace = "http://quakeml.org/xmlns/bed/1.2";
 
     public async Task<IReadOnlyList<ExternalEarthquakeDto>> GetRecentEarthquakesAsync(DateTimeOffset? since, CancellationToken cancellationToken)
     {
-        using var response = await httpClient.GetAsync($"{BaseUrl}fdsnws/event/1/query?format=geojson&limit=1", cancellationToken);
-        if ((int)response.StatusCode == 410)
-        {
-            throw new InvalidOperationException(
-                "EarthScope retiró oficialmente su servicio FDSN event en 2026 y este endpoint responde 410 Gone. No existe un mirror vigente en EarthScope para esta fuente; las alternativas oficiales publicadas por EarthScope son ISC y NEIC/USGS.");
-        }
+        var startTime = (since ?? DateTimeOffset.UtcNow.AddDays(-1)).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+        var url = $"{BaseUrl}fdsnws/event/1/query?format=xml&orderby=time&minmagnitude=1&starttime={Uri.EscapeDataString(startTime)}";
+        using var response = await httpClient.GetAsync(url, cancellationToken);
 
         response.EnsureSuccessStatusCode();
-        return [];
+        var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+        var document = XDocument.Parse(payload);
+
+        return document
+            .Descendants(QuakeMlNamespace + "event")
+            .Select(ParseEvent)
+            .Where(x => x is not null)
+            .Cast<ExternalEarthquakeDto>()
+            .ToList();
+    }
+
+    private ExternalEarthquakeDto? ParseEvent(XElement eventElement)
+    {
+        var preferredOriginId = eventElement.Element(QuakeMlNamespace + "preferredOriginID")?.Value;
+        var preferredMagnitudeId = eventElement.Element(QuakeMlNamespace + "preferredMagnitudeID")?.Value;
+
+        var origin = eventElement
+            .Elements(QuakeMlNamespace + "origin")
+            .FirstOrDefault(x => string.Equals((string?)x.Attribute("publicID"), preferredOriginId, StringComparison.Ordinal))
+            ?? eventElement.Elements(QuakeMlNamespace + "origin").FirstOrDefault();
+
+        if (origin is null)
+        {
+            return null;
+        }
+
+        var originId = (string?)origin.Attribute("publicID");
+        var magnitude = eventElement
+            .Elements(QuakeMlNamespace + "magnitude")
+            .FirstOrDefault(x => string.Equals((string?)x.Attribute("publicID"), preferredMagnitudeId, StringComparison.Ordinal))
+            ?? eventElement.Elements(QuakeMlNamespace + "magnitude")
+                .FirstOrDefault(x => string.Equals(x.Element(QuakeMlNamespace + "originID")?.Value, originId, StringComparison.Ordinal))
+            ?? eventElement.Elements(QuakeMlNamespace + "magnitude").FirstOrDefault();
+
+        var timeValue = origin.Element(QuakeMlNamespace + "time")?.Element(QuakeMlNamespace + "value")?.Value;
+        var latitudeValue = origin.Element(QuakeMlNamespace + "latitude")?.Element(QuakeMlNamespace + "value")?.Value;
+        var longitudeValue = origin.Element(QuakeMlNamespace + "longitude")?.Element(QuakeMlNamespace + "value")?.Value;
+        var depthValue = origin.Element(QuakeMlNamespace + "depth")?.Element(QuakeMlNamespace + "value")?.Value;
+        var magnitudeValue = magnitude?.Element(QuakeMlNamespace + "mag")?.Element(QuakeMlNamespace + "value")?.Value;
+
+        if (!DateTimeOffset.TryParse(timeValue, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var originTimeUtc)
+            || !double.TryParse(latitudeValue, CultureInfo.InvariantCulture, out var latitude)
+            || !double.TryParse(longitudeValue, CultureInfo.InvariantCulture, out var longitude))
+        {
+            return null;
+        }
+
+        _ = double.TryParse(depthValue, CultureInfo.InvariantCulture, out var depthMeters);
+        _ = double.TryParse(magnitudeValue, CultureInfo.InvariantCulture, out var magnitudeNumber);
+
+        var location = eventElement
+            .Elements(QuakeMlNamespace + "description")
+            .Select(x => x.Element(QuakeMlNamespace + "text")?.Value)
+            .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))
+            ?? "Sin descripción";
+
+        var magnitudeType = magnitude?.Element(QuakeMlNamespace + "type")?.Value ?? "unknown";
+        var sourceEventId = ExtractIscEventId((string?)eventElement.Attribute("publicID"));
+        var quality = BuildQuality(origin, magnitude);
+        var status = BuildStatus(eventElement);
+
+        return new ExternalEarthquakeDto(
+            Name,
+            sourceEventId,
+            originTimeUtc,
+            latitude,
+            longitude,
+            depthMeters / 1000d,
+            magnitudeNumber,
+            magnitudeType,
+            location,
+            quality,
+            status,
+            eventElement.ToString(SaveOptions.DisableFormatting));
+    }
+
+    private static string ExtractIscEventId(string? publicId)
+    {
+        if (string.IsNullOrWhiteSpace(publicId))
+        {
+            return Guid.NewGuid().ToString("N");
+        }
+
+        const string marker = "evid=";
+        var markerIndex = publicId.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex >= 0)
+        {
+            return publicId[(markerIndex + marker.Length)..];
+        }
+
+        return publicId;
+    }
+
+    private static string BuildQuality(XElement origin, XElement? magnitude)
+    {
+        var agency = origin.Element(QuakeMlNamespace + "creationInfo")?.Element(QuakeMlNamespace + "agencyID")?.Value
+            ?? magnitude?.Element(QuakeMlNamespace + "creationInfo")?.Element(QuakeMlNamespace + "author")?.Value
+            ?? "ISC";
+        var standardError = origin.Element(QuakeMlNamespace + "quality")?.Element(QuakeMlNamespace + "standardError")?.Value;
+        var stationCount = origin.Element(QuakeMlNamespace + "quality")?.Element(QuakeMlNamespace + "associatedStationCount")?.Value;
+
+        var details = new List<string> { agency };
+        if (!string.IsNullOrWhiteSpace(stationCount))
+        {
+            details.Add($"stations:{stationCount}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(standardError))
+        {
+            details.Add($"stderr:{standardError}");
+        }
+
+        return string.Join(" | ", details);
+    }
+
+    private static string BuildStatus(XElement eventElement)
+    {
+        var comment = eventElement
+            .Elements(QuakeMlNamespace + "comment")
+            .Select(x => x.Element(QuakeMlNamespace + "text")?.Value)
+            .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+
+        if (!string.IsNullOrWhiteSpace(comment)
+            && comment.Contains("not reviewed", StringComparison.OrdinalIgnoreCase))
+        {
+            return "preliminary";
+        }
+
+        return "reviewed";
     }
 }
