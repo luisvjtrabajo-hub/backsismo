@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.HttpOverrides;
+using System.Collections.Generic;
 using SismoAI.Analytics;
 using SismoAI.Application;
 using SismoAI.Infrastructure;
@@ -9,10 +10,17 @@ var builder = WebApplication.CreateBuilder(args);
 var renderPort = Environment.GetEnvironmentVariable("PORT");
 var useHttpsRedirection = builder.Configuration.GetValue<bool?>("App:UseHttpsRedirection")
     ?? string.IsNullOrWhiteSpace(renderPort);
-var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+var configuredOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
     ?.Where(origin => !string.IsNullOrWhiteSpace(origin))
+    .Select(NormalizeOrigin)
     .ToArray()
-    ?? ["http://localhost:5173"];
+    ?? [];
+var allowedOrigins = new HashSet<string>(
+    configuredOrigins.Concat([
+        "http://localhost:5173",
+        "https://sismo-five.vercel.app"
+    ].Select(NormalizeOrigin)),
+    StringComparer.OrdinalIgnoreCase);
 
 if (!string.IsNullOrWhiteSpace(renderPort))
 {
@@ -28,7 +36,7 @@ builder.Services.AddCors(options =>
     options.AddPolicy("frontend", policy =>
     {
         policy
-            .WithOrigins(allowedOrigins)
+            .SetIsOriginAllowed(origin => IsAllowedOrigin(origin, allowedOrigins))
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials();
@@ -81,4 +89,26 @@ public sealed class SignalRRealtimeNotifier(IHubContext<DashboardHub> hubContext
     {
         return hubContext.Clients.All.SendAsync("dashboardUpdated", snapshot, cancellationToken);
     }
+}
+
+static string NormalizeOrigin(string origin)
+{
+    return origin.Trim().TrimEnd('/');
+}
+
+static bool IsAllowedOrigin(string origin, HashSet<string> allowedOrigins)
+{
+    var normalized = NormalizeOrigin(origin);
+    if (allowedOrigins.Contains(normalized))
+    {
+        return true;
+    }
+
+    if (!Uri.TryCreate(normalized, UriKind.Absolute, out var uri))
+    {
+        return false;
+    }
+
+    return uri.Scheme == Uri.UriSchemeHttps
+        && uri.Host.EndsWith(".vercel.app", StringComparison.OrdinalIgnoreCase);
 }
