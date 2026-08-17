@@ -1,0 +1,17 @@
+.git
+.github
+.vs
+bin
+obj
+out
+TestResults
+
+**/bin
+**/obj
+**/.vs
+
+tests
+appssetings.json
+*.db
+*.db-shm
+*.db-wal
