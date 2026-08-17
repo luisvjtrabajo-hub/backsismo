@@ -199,9 +199,10 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
 
     public async Task UpdateAnomalyScoreForRecentAsync(double anomalyScore, DateTimeOffset sinceUtc, CancellationToken cancellationToken)
     {
-        var events = await dbContext.EarthquakeEvents
+        var events = await dbContext.EarthquakeEvents.ToListAsync(cancellationToken);
+        events = events
             .Where(x => x.OriginTimeUtc >= sinceUtc)
-            .ToListAsync(cancellationToken);
+            .ToList();
 
         foreach (var item in events)
         {
@@ -212,65 +213,38 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
 
     public async Task<IReadOnlyList<EarthquakeEvent>> GetRecentAsync(int count, CancellationToken cancellationToken)
     {
-        if (dbContext.Database.IsSqlite())
-        {
-            var items = await dbContext.EarthquakeEvents
-                .AsNoTracking()
-                .ToListAsync(cancellationToken);
-
-            return items
-                .OrderByDescending(x => x.OriginTimeUtc)
-                .Take(count)
-                .ToList();
-        }
-
-        return await dbContext.EarthquakeEvents
-            .OrderByDescending(x => x.OriginTimeUtc)
-            .Take(count)
+        var items = await dbContext.EarthquakeEvents
             .AsNoTracking()
             .ToListAsync(cancellationToken);
+
+        return items
+            .OrderByDescending(x => x.OriginTimeUtc)
+            .Take(count)
+            .ToList();
     }
 
     public async Task<IReadOnlyList<EarthquakeEvent>> GetSinceAsync(DateTimeOffset sinceUtc, CancellationToken cancellationToken)
     {
-        if (dbContext.Database.IsSqlite())
-        {
-            var items = await dbContext.EarthquakeEvents
-                .Where(x => x.OriginTimeUtc >= sinceUtc)
-                .AsNoTracking()
-                .ToListAsync(cancellationToken);
-
-            return items
-                .OrderByDescending(x => x.OriginTimeUtc)
-                .ToList();
-        }
-
-        return await dbContext.EarthquakeEvents
-            .Where(x => x.OriginTimeUtc >= sinceUtc)
-            .OrderByDescending(x => x.OriginTimeUtc)
+        var items = await dbContext.EarthquakeEvents
             .AsNoTracking()
             .ToListAsync(cancellationToken);
+
+        return items
+            .Where(x => x.OriginTimeUtc >= sinceUtc)
+            .OrderByDescending(x => x.OriginTimeUtc)
+            .ToList();
     }
 
     public async Task<IReadOnlyList<EarthquakeEvent>> GetBetweenAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken cancellationToken)
     {
-        if (dbContext.Database.IsSqlite())
-        {
-            var items = await dbContext.EarthquakeEvents
-                .Where(x => x.OriginTimeUtc >= fromUtc && x.OriginTimeUtc <= toUtc)
-                .AsNoTracking()
-                .ToListAsync(cancellationToken);
-
-            return items
-                .OrderBy(x => x.OriginTimeUtc)
-                .ToList();
-        }
-
-        return await dbContext.EarthquakeEvents
-            .Where(x => x.OriginTimeUtc >= fromUtc && x.OriginTimeUtc <= toUtc)
-            .OrderBy(x => x.OriginTimeUtc)
+        var items = await dbContext.EarthquakeEvents
             .AsNoTracking()
             .ToListAsync(cancellationToken);
+
+        return items
+            .Where(x => x.OriginTimeUtc >= fromUtc && x.OriginTimeUtc <= toUtc)
+            .OrderBy(x => x.OriginTimeUtc)
+            .ToList();
     }
 
     public async Task<Dictionary<string, DateTimeOffset?>> GetLatestOriginBySourceAsync(CancellationToken cancellationToken)
@@ -289,42 +263,25 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
 
     public async Task<AnomalySnapshot?> GetLatestSnapshotAsync(CancellationToken cancellationToken)
     {
-        if (dbContext.Database.IsSqlite())
-        {
-            var items = await dbContext.AnomalySnapshots
-                .AsNoTracking()
-                .ToListAsync(cancellationToken);
-
-            return items
-                .OrderByDescending(x => x.CapturedAtUtc)
-                .FirstOrDefault();
-        }
-
-        return await dbContext.AnomalySnapshots
-            .OrderByDescending(x => x.CapturedAtUtc)
+        var items = await dbContext.AnomalySnapshots
             .AsNoTracking()
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+
+        return items
+            .OrderByDescending(x => x.CapturedAtUtc)
+            .FirstOrDefault();
     }
 
     public async Task<IReadOnlyList<AnomalySnapshot>> GetRecentSnapshotsAsync(int count, CancellationToken cancellationToken)
     {
-        if (dbContext.Database.IsSqlite())
-        {
-            var items = await dbContext.AnomalySnapshots
-                .AsNoTracking()
-                .ToListAsync(cancellationToken);
-
-            return items
-                .OrderByDescending(x => x.CapturedAtUtc)
-                .Take(count)
-                .ToList();
-        }
-
-        return await dbContext.AnomalySnapshots
-            .OrderByDescending(x => x.CapturedAtUtc)
-            .Take(count)
+        var items = await dbContext.AnomalySnapshots
             .AsNoTracking()
             .ToListAsync(cancellationToken);
+
+        return items
+            .OrderByDescending(x => x.CapturedAtUtc)
+            .Take(count)
+            .ToList();
     }
 
     public async Task SaveSnapshotAsync(AnomalySnapshot snapshot, CancellationToken cancellationToken)
@@ -590,11 +547,12 @@ public sealed class EarthquakeIngestionWorker(
 public sealed class UsgsDataSource(HttpClient httpClient) : IEarthquakeDataSource
 {
     public string Name => "USGS";
+    private const string BaseUrl = "https://earthquake.usgs.gov/";
 
     public async Task<IReadOnlyList<ExternalEarthquakeDto>> GetRecentEarthquakesAsync(DateTimeOffset? since, CancellationToken cancellationToken)
     {
         var startTime = (since ?? DateTimeOffset.UtcNow.AddDays(-1)).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
-        var url = $"fdsnws/event/1/query?format=geojson&orderby=time&minmagnitude=1&starttime={Uri.EscapeDataString(startTime)}";
+        var url = $"{BaseUrl}fdsnws/event/1/query?format=geojson&orderby=time&minmagnitude=1&starttime={Uri.EscapeDataString(startTime)}";
         using var response = await httpClient.GetAsync(url, cancellationToken);
         response.EnsureSuccessStatusCode();
 
@@ -651,10 +609,11 @@ public sealed class UsgsDataSource(HttpClient httpClient) : IEarthquakeDataSourc
 public sealed class IgpDataSource(HttpClient httpClient) : IEarthquakeDataSource
 {
     public string Name => "IGP";
+    private const string BaseUrl = "https://censis.igp.gob.pe/";
 
     public async Task<IReadOnlyList<ExternalEarthquakeDto>> GetRecentEarthquakesAsync(DateTimeOffset? since, CancellationToken cancellationToken)
     {
-        using var response = await httpClient.GetAsync("api/news", cancellationToken);
+        using var response = await httpClient.GetAsync($"{BaseUrl}api/news", cancellationToken);
         response.EnsureSuccessStatusCode();
 
         throw new InvalidOperationException(
@@ -665,10 +624,11 @@ public sealed class IgpDataSource(HttpClient httpClient) : IEarthquakeDataSource
 public sealed class IrisDataSource(HttpClient httpClient) : IEarthquakeDataSource
 {
     public string Name => "IRIS";
+    private const string BaseUrl = "https://service.earthscope.org/";
 
     public async Task<IReadOnlyList<ExternalEarthquakeDto>> GetRecentEarthquakesAsync(DateTimeOffset? since, CancellationToken cancellationToken)
     {
-        using var response = await httpClient.GetAsync("fdsnws/event/1/query?format=geojson&limit=1", cancellationToken);
+        using var response = await httpClient.GetAsync($"{BaseUrl}fdsnws/event/1/query?format=geojson&limit=1", cancellationToken);
         if ((int)response.StatusCode == 410)
         {
             throw new InvalidOperationException(
