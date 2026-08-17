@@ -12,14 +12,15 @@ var useHttpsRedirection = builder.Configuration.GetValue<bool?>("App:UseHttpsRed
     ?? string.IsNullOrWhiteSpace(renderPort);
 var configuredOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
     ?.Where(origin => !string.IsNullOrWhiteSpace(origin))
-    .Select(NormalizeOrigin)
+    .Select(CorsOriginHelper.NormalizeOrigin)
     .ToArray()
     ?? [];
 var allowedOrigins = new HashSet<string>(
-    configuredOrigins.Concat([
+    configuredOrigins.Concat(new[]
+    {
         "http://localhost:5173",
         "https://sismo-five.vercel.app"
-    ].Select(NormalizeOrigin)),
+    }.Select(CorsOriginHelper.NormalizeOrigin)),
     StringComparer.OrdinalIgnoreCase);
 
 if (!string.IsNullOrWhiteSpace(renderPort))
@@ -36,7 +37,7 @@ builder.Services.AddCors(options =>
     options.AddPolicy("frontend", policy =>
     {
         policy
-            .SetIsOriginAllowed(origin => IsAllowedOrigin(origin, allowedOrigins))
+            .SetIsOriginAllowed(origin => CorsOriginHelper.IsAllowedOrigin(origin, allowedOrigins))
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials();
@@ -91,24 +92,27 @@ public sealed class SignalRRealtimeNotifier(IHubContext<DashboardHub> hubContext
     }
 }
 
-static string NormalizeOrigin(string origin)
+internal static class CorsOriginHelper
 {
-    return origin.Trim().TrimEnd('/');
-}
-
-static bool IsAllowedOrigin(string origin, HashSet<string> allowedOrigins)
-{
-    var normalized = NormalizeOrigin(origin);
-    if (allowedOrigins.Contains(normalized))
+    public static string NormalizeOrigin(string origin)
     {
-        return true;
+        return origin.Trim().TrimEnd('/');
     }
 
-    if (!Uri.TryCreate(normalized, UriKind.Absolute, out var uri))
+    public static bool IsAllowedOrigin(string origin, HashSet<string> allowedOrigins)
     {
-        return false;
-    }
+        var normalized = NormalizeOrigin(origin);
+        if (allowedOrigins.Contains(normalized))
+        {
+            return true;
+        }
 
-    return uri.Scheme == Uri.UriSchemeHttps
-        && uri.Host.EndsWith(".vercel.app", StringComparison.OrdinalIgnoreCase);
+        if (!Uri.TryCreate(normalized, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        return uri.Scheme == Uri.UriSchemeHttps
+            && uri.Host.EndsWith(".vercel.app", StringComparison.OrdinalIgnoreCase);
+    }
 }
