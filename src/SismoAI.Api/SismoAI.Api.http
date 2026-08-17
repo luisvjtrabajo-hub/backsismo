@@ -1,0 +1,6 @@
+@SismoAI.Api_HostAddress = http://localhost:5267
+
+GET {{SismoAI.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

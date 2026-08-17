@@ -1,0 +1,3 @@
+"ConnectionStrings": {
+  "PostgreSql": "Host=localhost;Port=5432;Database=sismoai;Username=sismoai;Password=sismoai;SSL Mode=Disable"
+}

@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/">
+    <File Path="appssetings.json" />
+    <Project Path="src/SismoAI.Analytics/SismoAI.Analytics.csproj" />
+    <Project Path="src/SismoAI.Api/SismoAI.Api.csproj" />
+    <Project Path="src/SismoAI.Application/SismoAI.Application.csproj" />
+    <Project Path="src/SismoAI.Domain/SismoAI.Domain.csproj" />
+    <Project Path="src/SismoAI.Infrastructure/SismoAI.Infrastructure.csproj" />
+    <Project Path="src/SismoAI.MachineLearning/SismoAI.MachineLearning.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SismoAI.BacktestTests/SismoAI.BacktestTests.csproj" />
+    <Project Path="tests/SismoAI.IntegrationTests/SismoAI.IntegrationTests.csproj" />
+    <Project Path="tests/SismoAI.UnitTests/SismoAI.UnitTests.csproj" />
+  </Folder>
+</Solution>

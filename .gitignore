@@ -1,0 +1,14 @@
+.vs/
+bin/
+obj/
+out/
+
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+appsettings.*.local.json
+*.db
+*.db-shm
+*.db-wal
