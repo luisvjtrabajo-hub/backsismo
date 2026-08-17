@@ -108,6 +108,7 @@ public interface IMonitoringRepository
     Task<IReadOnlyList<AnomalySnapshot>> GetRecentSnapshotsAsync(int count, CancellationToken cancellationToken);
     Task SaveSnapshotAsync(AnomalySnapshot snapshot, CancellationToken cancellationToken);
     Task<IReadOnlyList<SourceSyncState>> GetSourceStatesAsync(CancellationToken cancellationToken);
+    Task RemoveMissingSourceStatesAsync(IReadOnlyCollection<string> activeSourceNames, CancellationToken cancellationToken);
     Task UpsertSourceStateAsync(SourceSyncState state, CancellationToken cancellationToken);
     Task SaveChangesAsync(CancellationToken cancellationToken);
 }

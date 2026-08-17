@@ -298,6 +298,21 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
             .ToListAsync(cancellationToken);
     }
 
+    public async Task RemoveMissingSourceStatesAsync(IReadOnlyCollection<string> activeSourceNames, CancellationToken cancellationToken)
+    {
+        var active = new HashSet<string>(activeSourceNames, StringComparer.OrdinalIgnoreCase);
+        var staleStates = await dbContext.SourceSyncStates
+            .Where(x => !active.Contains(x.SourceName))
+            .ToListAsync(cancellationToken);
+
+        if (staleStates.Count == 0)
+        {
+            return;
+        }
+
+        dbContext.SourceSyncStates.RemoveRange(staleStates);
+    }
+
     public async Task UpsertSourceStateAsync(SourceSyncState state, CancellationToken cancellationToken)
     {
         var existing = await dbContext.SourceSyncStates
@@ -447,9 +462,12 @@ public sealed class EarthquakeIngestionWorker(
         var monitoringRepository = scope.ServiceProvider.GetRequiredService<IMonitoringRepository>();
         var dashboardService = scope.ServiceProvider.GetRequiredService<IDashboardService>();
         var dataSources = scope.ServiceProvider.GetRequiredService<IEnumerable<IEarthquakeDataSource>>();
+        var activeSourceNames = dataSources.Select(x => x.Name).ToArray();
 
         var latestBySource = await earthquakeRepository.GetLatestOriginBySourceAsync(cancellationToken);
         var lookbackSince = DateTimeOffset.UtcNow.AddHours(-Math.Max(1, options.Value.QueryLookbackHours));
+        await monitoringRepository.RemoveMissingSourceStatesAsync(activeSourceNames, cancellationToken);
+        await monitoringRepository.SaveChangesAsync(cancellationToken);
 
         foreach (var source in dataSources)
         {
