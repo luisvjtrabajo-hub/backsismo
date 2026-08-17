@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Xml.Linq;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
@@ -82,7 +83,7 @@ public static class DependencyInjection
 
         services.AddHttpClient<IgpDataSource>(client =>
         {
-            client.BaseAddress = new Uri("https://censis.igp.gob.pe/");
+            client.BaseAddress = new Uri("https://ide.igp.gob.pe/");
             client.Timeout = TimeSpan.FromSeconds(30);
         });
 
@@ -628,15 +629,118 @@ public sealed class UsgsDataSource(HttpClient httpClient) : IEarthquakeDataSourc
 public sealed class IgpDataSource(HttpClient httpClient) : IEarthquakeDataSource
 {
     public string Name => "IGP";
-    private const string BaseUrl = "https://censis.igp.gob.pe/";
+    private const string BaseUrl = "https://ide.igp.gob.pe/";
 
     public async Task<IReadOnlyList<ExternalEarthquakeDto>> GetRecentEarthquakesAsync(DateTimeOffset? since, CancellationToken cancellationToken)
     {
-        using var response = await httpClient.GetAsync($"{BaseUrl}api/news", cancellationToken);
+        var url = $"{BaseUrl}arcgis/rest/services/monitoreocensis/SismosReportados/MapServer/0/query?where={Uri.EscapeDataString("fechaevento IS NOT NULL")}&outFields=*&returnGeometry=true&orderByFields=fechaevento DESC&resultRecordCount=200&f=pjson";
+        using var response = await httpClient.GetAsync(url, cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        throw new InvalidOperationException(
-            "IGP/CENSIS expone contenido web público, pero no se identificó una API sísmica pública estable y documentada para eventos recientes. El adapter quedó preparado y pendiente de una especificación oficial.");
+        var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+        var feed = JsonSerializer.Deserialize<IgpArcGisQueryResponse>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new IgpArcGisQueryResponse();
+        var threshold = since ?? DateTimeOffset.UtcNow.AddDays(-1);
+
+        return feed.Features
+            .Where(x => x.Attributes is not null && x.Geometry is not null)
+            .Select(MapFeature)
+            .Where(x => x is not null && x.OriginTimeUtc >= threshold)
+            .Cast<ExternalEarthquakeDto>()
+            .ToList();
+    }
+
+    private ExternalEarthquakeDto? MapFeature(IgpArcGisFeature feature)
+    {
+        var attributes = feature.Attributes;
+        var geometry = feature.Geometry;
+        if (attributes is null || geometry is null || attributes.FechaEvento is null)
+        {
+            return null;
+        }
+
+        var originTimeUtc = DateTimeOffset.FromUnixTimeMilliseconds(attributes.FechaEvento.Value);
+        var depthKm = attributes.Prof ?? 0;
+        var location = string.IsNullOrWhiteSpace(attributes.Ref)
+            ? attributes.Department ?? "Sin descripción"
+            : attributes.Ref;
+        var sourceEventId = !string.IsNullOrWhiteSpace(attributes.Code)
+            ? attributes.Code
+            : $"igp-{attributes.ObjectId}";
+        var qualityParts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(attributes.Intensity))
+        {
+            qualityParts.Add(attributes.Intensity.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(attributes.DepthCategory))
+        {
+            qualityParts.Add(attributes.DepthCategory.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(attributes.Department))
+        {
+            qualityParts.Add(attributes.Department.Trim());
+        }
+
+        return new ExternalEarthquakeDto(
+            Name,
+            sourceEventId,
+            originTimeUtc,
+            geometry.Y,
+            geometry.X,
+            depthKm,
+            attributes.Magnitude ?? 0,
+            string.IsNullOrWhiteSpace(attributes.MagText) ? "M" : attributes.MagText,
+            location,
+            string.Join(" | ", qualityParts),
+            attributes.ReportNumber is > 0 ? "reported" : "unknown",
+            JsonSerializer.Serialize(feature));
+    }
+
+    private sealed class IgpArcGisQueryResponse
+    {
+        public List<IgpArcGisFeature> Features { get; set; } = [];
+    }
+
+    private sealed class IgpArcGisFeature
+    {
+        public IgpArcGisAttributes? Attributes { get; set; }
+        public IgpArcGisGeometry? Geometry { get; set; }
+    }
+
+    private sealed class IgpArcGisAttributes
+    {
+        [JsonPropertyName("objectid")]
+        public int ObjectId { get; set; }
+        [JsonPropertyName("fechaevento")]
+        public long? FechaEvento { get; set; }
+        [JsonPropertyName("prof")]
+        public int? Prof { get; set; }
+        [JsonPropertyName("ref")]
+        public string? Ref { get; set; }
+        [JsonPropertyName("int_")]
+        public string? Intensity { get; set; }
+        [JsonPropertyName("profundidad")]
+        public string? DepthCategory { get; set; }
+        [JsonPropertyName("magnitud")]
+        public double? Magnitude { get; set; }
+        [JsonPropertyName("departamento")]
+        public string? Department { get; set; }
+        [JsonPropertyName("reporte")]
+        public int? ReportNumber { get; set; }
+        [JsonPropertyName("mag")]
+        public string? MagText { get; set; }
+        [JsonPropertyName("code")]
+        public string? Code { get; set; }
+    }
+
+    private sealed class IgpArcGisGeometry
+    {
+        [JsonPropertyName("x")]
+        public double X { get; set; }
+        [JsonPropertyName("y")]
+        public double Y { get; set; }
     }
 }
 

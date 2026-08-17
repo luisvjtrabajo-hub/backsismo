@@ -1,0 +1,56 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "SismoAI.Analytics/1.0.0": {
+        "dependencies": {
+          "SismoAI.Application": "1.0.0",
+          "SismoAI.Domain": "1.0.0"
+        },
+        "runtime": {
+          "SismoAI.Analytics.dll": {}
+        }
+      },
+      "SismoAI.Application/1.0.0": {
+        "dependencies": {
+          "SismoAI.Domain": "1.0.0"
+        },
+        "runtime": {
+          "SismoAI.Application.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "SismoAI.Domain/1.0.0": {
+        "runtime": {
+          "SismoAI.Domain.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "SismoAI.Analytics/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "SismoAI.Application/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "SismoAI.Domain/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

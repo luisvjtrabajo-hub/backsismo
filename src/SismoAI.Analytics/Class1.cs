@@ -5,6 +5,67 @@ namespace SismoAI.Analytics;
 
 public sealed class StatisticalAnalyticsEngine : IAnalyticsEngine
 {
+    private static readonly (string Keyword, string Country)[] CountryHints =
+    [
+        ("perú", "Perú"),
+        ("peru", "Perú"),
+        ("lima", "Perú"),
+        ("ancash", "Perú"),
+        ("áncash", "Perú"),
+        ("ica", "Perú"),
+        ("arequipa", "Perú"),
+        ("cañete", "Perú"),
+        ("nasca", "Perú"),
+        ("huari", "Perú"),
+        ("chile", "Chile"),
+        ("argentina", "Argentina"),
+        ("ecuador", "Ecuador"),
+        ("colombia", "Colombia"),
+        ("bolivia", "Bolivia"),
+        ("mexico", "México"),
+        ("méxico", "México"),
+        ("guatemala", "Guatemala"),
+        ("costa rica", "Costa Rica"),
+        ("nicaragua", "Nicaragua"),
+        ("panamá", "Panamá"),
+        ("panama", "Panamá"),
+        ("el salvador", "El Salvador"),
+        ("california", "Estados Unidos"),
+        ("nevada", "Estados Unidos"),
+        ("alaska", "Estados Unidos"),
+        ("hawaii", "Estados Unidos"),
+        ("oklahoma", "Estados Unidos"),
+        ("texas", "Estados Unidos"),
+        ("puerto rico", "Estados Unidos"),
+        ("united states", "Estados Unidos"),
+        ("usa", "Estados Unidos"),
+        ("canada", "Canadá"),
+        ("canadá", "Canadá"),
+        ("austria", "Austria"),
+        ("greece", "Grecia"),
+        ("grecia", "Grecia"),
+        ("italy", "Italia"),
+        ("italia", "Italia"),
+        ("japan", "Japón"),
+        ("japón", "Japón"),
+        ("indonesia", "Indonesia"),
+        ("philippines", "Filipinas"),
+        ("filipinas", "Filipinas"),
+        ("turkiye", "Turquía"),
+        ("türkiye", "Turquía"),
+        ("turquía", "Turquía"),
+        ("turquia", "Turquía"),
+        ("china", "China"),
+        ("russia", "Rusia"),
+        ("rusia", "Rusia"),
+        ("afghanistan", "Afganistán"),
+        ("afganistán", "Afganistán"),
+        ("iran", "Irán"),
+        ("irán", "Irán"),
+        ("new zealand", "Nueva Zelanda"),
+        ("nueva zelanda", "Nueva Zelanda")
+    ];
+
     public AnalyticsResult Analyze(IReadOnlyList<EarthquakeEvent> recentEvents)
     {
         if (recentEvents.Count == 0)
@@ -33,6 +94,7 @@ public sealed class StatisticalAnalyticsEngine : IAnalyticsEngine
         var shallowBaseline = baseline.Count == 0 ? 0 : baseline.Count(x => x.DepthKm <= 40) / (double)baseline.Count;
         var shallowDelta = shallowRatio - shallowBaseline;
         var maxMagnitude = last6Hours.Count == 0 ? ordered.Max(x => x.Magnitude) : last6Hours.Max(x => x.Magnitude);
+        var elevatedLocation = DescribeDominantLocation(last6Hours);
 
         var score = 0d;
         var drivers = new List<string>();
@@ -40,7 +102,8 @@ public sealed class StatisticalAnalyticsEngine : IAnalyticsEngine
         if (rateDelta > 0.5)
         {
             score += Math.Min(35, rateDelta * 20);
-            drivers.Add($"Frecuencia sísmica elevada ({currentHourlyRate:F1}/h frente a {baselineHourlyRate:F1}/h).");
+            var locationSuffix = string.IsNullOrWhiteSpace(elevatedLocation) ? string.Empty : $" en {elevatedLocation}";
+            drivers.Add($"Frecuencia sísmica elevada{locationSuffix} ({currentHourlyRate:F1}/h frente a {baselineHourlyRate:F1}/h).");
         }
 
         if (magnitudeDelta > 0.35)
@@ -72,9 +135,18 @@ public sealed class StatisticalAnalyticsEngine : IAnalyticsEngine
 
         var summary = level switch
         {
-            "anomalia" => "La actividad reciente se desvía de la línea base histórica y merece seguimiento estadístico.",
-            "correlacion" => "Se observan señales elevadas, pero todavía dentro de un rango de correlación exploratoria.",
-            "actividad-elevada" => "La actividad subió respecto al promedio reciente sin constituir una anomalía fuerte.",
+            "anomalia" => AppendLocationContext(
+                "La actividad reciente se desvía de la línea base histórica y merece seguimiento estadístico.",
+                elevatedLocation,
+                "con concentración principal en"),
+            "correlacion" => AppendLocationContext(
+                "Se observan señales elevadas, pero todavía dentro de un rango de correlación exploratoria.",
+                elevatedLocation,
+                "con mayor concentración en"),
+            "actividad-elevada" => AppendLocationContext(
+                "La actividad subió respecto al promedio reciente sin constituir una anomalía fuerte.",
+                elevatedLocation,
+                "principalmente en"),
             _ => "La actividad reciente se mantiene dentro del rango esperado de la muestra disponible."
         };
 
@@ -99,5 +171,96 @@ public sealed class StatisticalAnalyticsEngine : IAnalyticsEngine
         }
 
         return result;
+    }
+
+    private static string AppendLocationContext(string summary, string? location, string connector)
+    {
+        if (string.IsNullOrWhiteSpace(location))
+        {
+            return summary;
+        }
+
+        return $"{summary.TrimEnd('.')} {connector} {location}.";
+    }
+
+    private static string? DescribeDominantLocation(IReadOnlyList<EarthquakeEvent> events)
+    {
+        if (events.Count == 0)
+        {
+            return null;
+        }
+
+        var dominant = events
+            .Select(x => new
+            {
+                Country = InferCountry(x),
+                Region = ExtractRegionHint(x.LocationDescription)
+            })
+            .Where(x => !string.IsNullOrWhiteSpace(x.Country) || !string.IsNullOrWhiteSpace(x.Region))
+            .GroupBy(x => x.Country ?? x.Region!)
+            .OrderByDescending(group => group.Count())
+            .FirstOrDefault();
+
+        if (dominant is null)
+        {
+            return null;
+        }
+
+        var country = dominant.Key;
+        var region = dominant
+            .Select(x => x.Region)
+            .Where(x => !string.IsNullOrWhiteSpace(x) && !string.Equals(x, country, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(x => x!, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(group => group.Count())
+            .Select(group => group.Key)
+            .FirstOrDefault();
+
+        return string.IsNullOrWhiteSpace(region) ? country : $"{country} ({region})";
+    }
+
+    private static string? InferCountry(EarthquakeEvent earthquakeEvent)
+    {
+        if (string.Equals(earthquakeEvent.Source, "IGP", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Perú";
+        }
+
+        var description = earthquakeEvent.LocationDescription?.Trim();
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            return null;
+        }
+
+        var normalized = description.ToLowerInvariant();
+        foreach (var (keyword, country) in CountryHints)
+        {
+            if (normalized.Contains(keyword, StringComparison.Ordinal))
+            {
+                return country;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractRegionHint(string? locationDescription)
+    {
+        if (string.IsNullOrWhiteSpace(locationDescription))
+        {
+            return null;
+        }
+
+        var text = locationDescription.Trim();
+        if (text.Contains(" - ", StringComparison.Ordinal))
+        {
+            return text.Split(" - ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault();
+        }
+
+        if (text.Contains(',', StringComparison.Ordinal))
+        {
+            return text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault();
+        }
+
+        return text.Any(char.IsDigit) ? null : text;
     }
 }
