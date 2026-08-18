@@ -612,9 +612,18 @@ public sealed class DashboardService(
         {
             earthquakeByDate.TryGetValue(date, out var dayEarthquakes);
             climateByDate.TryGetValue(date, out var dayClimate);
-                geomagneticByDate.TryGetValue(date, out var dayGeomagnetic);
+            geomagneticByDate.TryGetValue(date, out var dayGeomagnetic);
             var events = dayEarthquakes ?? [];
-                var geomagneticItems = dayGeomagnetic ?? [];
+            var geomagneticItems = dayGeomagnetic ?? [];
+            var window7Events = CollectWindowEvents(earthquakeByDate, date, 7);
+            var window30Events = CollectWindowEvents(earthquakeByDate, date, 30);
+            var significantCount7d = window7Events.Count(x => x.Magnitude >= 4.5);
+            var significantCount30d = window30Events.Count(x => x.Magnitude >= 4.5);
+            var totalEnergy7d = Math.Round(window7Events.Sum(x => x.ApproximateEnergyJoules), 3);
+            var totalEnergy30d = Math.Round(window30Events.Sum(x => x.ApproximateEnergyJoules), 3);
+            var activityRatio7dTo30d = ComputeWindowRatio(window7Events.Count / 7d, window30Events.Count / 30d);
+            var significantActivityRatio7dTo30d = ComputeWindowRatio(significantCount7d / 7d, significantCount30d / 30d);
+            var energyRatio7dTo30d = ComputeWindowRatio(totalEnergy7d / 7d, totalEnergy30d / 30d);
             var nextDate = date.AddDays(1);
             earthquakeByDate.TryGetValue(nextDate, out var nextDayEarthquakes);
             var nextEvents = nextDayEarthquakes ?? [];
@@ -629,6 +638,23 @@ public sealed class DashboardService(
                 events.Count == 0 ? 0 : Math.Round(events.Average(x => x.Magnitude), 3),
                 events.Count == 0 ? 0 : Math.Round(events.Average(x => x.DepthKm), 3),
                 Math.Round(events.Sum(x => x.ApproximateEnergyJoules), 3),
+                window7Events.Count,
+                window30Events.Count,
+                significantCount7d,
+                significantCount30d,
+                window7Events.Count == 0 ? 0 : window7Events.Max(x => x.Magnitude),
+                window30Events.Count == 0 ? 0 : window30Events.Max(x => x.Magnitude),
+                window7Events.Count == 0 ? 0 : Math.Round(window7Events.Average(x => x.Magnitude), 3),
+                window30Events.Count == 0 ? 0 : Math.Round(window30Events.Average(x => x.Magnitude), 3),
+                totalEnergy7d,
+                totalEnergy30d,
+                ComputeBValue(window30Events),
+                Math.Round(significantCount7d / 7d, 4),
+                Math.Round(significantCount30d / 30d, 4),
+                activityRatio7dTo30d,
+                significantActivityRatio7dTo30d,
+                energyRatio7dTo30d,
+                ComputeDaysSinceLastSignificant(earthquakeByDate, date),
                 dayClimate?.Temperature2mMean,
                 dayClimate?.Temperature2mMax,
                 dayClimate?.Temperature2mMin,
@@ -638,12 +664,12 @@ public sealed class DashboardService(
                 dayClimate?.WindSpeed10mMean,
                 dayClimate?.SoilMoisture0To10cmMean,
                 dayClimate?.ShortwaveRadiationSum,
-                    geomagneticItems.Count,
-                    ComputeRange(geomagneticItems.Select(x => x.X)),
-                    ComputeRange(geomagneticItems.Select(x => x.Y)),
-                    ComputeRange(geomagneticItems.Select(x => x.Z)),
-                    ComputeRange(geomagneticItems.Select(x => x.F)),
-                    ComputeMeanAbsoluteDelta(geomagneticItems.Select(x => x.F)),
+                geomagneticItems.Count,
+                ComputeRange(geomagneticItems.Select(x => x.X)),
+                ComputeRange(geomagneticItems.Select(x => x.Y)),
+                ComputeRange(geomagneticItems.Select(x => x.Z)),
+                ComputeRange(geomagneticItems.Select(x => x.F)),
+                ComputeMeanAbsoluteDelta(geomagneticItems.Select(x => x.F)),
                 nextEvents.Count,
                 nextEvents.Any(x => x.Magnitude >= 4.5)));
         }
@@ -653,41 +679,114 @@ public sealed class DashboardService(
             .ToList();
     }
 
-        private static double? ComputeRange(IEnumerable<double?> values)
+    private static List<EarthquakeEvent> CollectWindowEvents(
+        IReadOnlyDictionary<DateOnly, List<EarthquakeEvent>> earthquakeByDate,
+        DateOnly date,
+        int windowDays)
+    {
+        var collected = new List<EarthquakeEvent>();
+        for (var offset = windowDays - 1; offset >= 0; offset--)
         {
-            var materialized = values
-                .Where(x => x.HasValue)
-                .Select(x => x!.Value)
-                .ToList();
-
-            if (materialized.Count < 2)
+            if (earthquakeByDate.TryGetValue(date.AddDays(-offset), out var items))
             {
-                return null;
+                collected.AddRange(items);
             }
-
-            return Math.Round(materialized.Max() - materialized.Min(), 6);
         }
 
-        private static double? ComputeMeanAbsoluteDelta(IEnumerable<double?> values)
+        return collected;
+    }
+
+    private static int ComputeDaysSinceLastSignificant(
+        IReadOnlyDictionary<DateOnly, List<EarthquakeEvent>> earthquakeByDate,
+        DateOnly date)
+    {
+        for (var offset = 0; offset <= 3650; offset++)
         {
-            var materialized = values
-                .Where(x => x.HasValue)
-                .Select(x => x!.Value)
-                .ToList();
-
-            if (materialized.Count < 2)
+            var candidateDate = date.AddDays(-offset);
+            if (earthquakeByDate.TryGetValue(candidateDate, out var items)
+                && items.Any(x => x.Magnitude >= 4.5))
             {
-                return null;
+                return offset;
             }
-
-            var deltas = new List<double>(materialized.Count - 1);
-            for (var index = 1; index < materialized.Count; index++)
-            {
-                deltas.Add(Math.Abs(materialized[index] - materialized[index - 1]));
-            }
-
-            return deltas.Count == 0 ? null : Math.Round(deltas.Average(), 6);
         }
+
+        return 3651;
+    }
+
+    private static double ComputeWindowRatio(double shortWindowRate, double longWindowRate)
+    {
+        if (longWindowRate <= 0)
+        {
+            return shortWindowRate <= 0 ? 1 : Math.Round(shortWindowRate + 1, 4);
+        }
+
+        return Math.Round(shortWindowRate / longWindowRate, 4);
+    }
+
+    private static double ComputeBValue(IReadOnlyList<EarthquakeEvent> events)
+    {
+        if (events.Count < 25)
+        {
+            return 0;
+        }
+
+        var magnitudes = events
+            .Select(x => x.Magnitude)
+            .Where(x => x > 0)
+            .OrderBy(x => x)
+            .ToList();
+
+        if (magnitudes.Count < 25)
+        {
+            return 0;
+        }
+
+        const double magnitudeBin = 0.1;
+        var completenessMagnitude = magnitudes.Min();
+        var denominator = magnitudes.Average() - (completenessMagnitude - (magnitudeBin / 2d));
+        if (denominator <= 0)
+        {
+            return 0;
+        }
+
+        return Math.Round(Math.Log10(Math.E) / denominator, 4);
+    }
+
+    private static double? ComputeRange(IEnumerable<double?> values)
+    {
+        var materialized = values
+            .Where(x => x.HasValue)
+            .Select(x => x!.Value)
+            .ToList();
+
+        if (materialized.Count < 2)
+        {
+            return null;
+        }
+
+        return Math.Round(materialized.Max() - materialized.Min(), 6);
+    }
+
+    private static double? ComputeMeanAbsoluteDelta(IEnumerable<double?> values)
+    {
+        var materialized = values
+            .Where(x => x.HasValue)
+            .Select(x => x!.Value)
+            .ToList();
+
+        if (materialized.Count < 2)
+        {
+            return null;
+        }
+
+        var deltas = new List<double>(materialized.Count - 1);
+        for (var index = 1; index < materialized.Count; index++)
+        {
+            deltas.Add(Math.Abs(materialized[index] - materialized[index - 1]));
+        }
+
+        return deltas.Count == 0 ? null : Math.Round(deltas.Average(), 6);
+    }
 
     private static IReadOnlyList<ClusterDto> BuildGeoClusters(IReadOnlyList<EarthquakeEvent> events, double bucketSize, string prefix)
     {
