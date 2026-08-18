@@ -70,10 +70,13 @@ public sealed record DashboardSnapshotDto(
     string CurrentPeruAnomalyLevel,
     string CurrentPeruSummary,
     IReadOnlyList<string> PeruTopDrivers,
-    PeruBaselineClassificationDto PeruMachineLearning,
+    CountryBaselineClassificationDto PeruMachineLearning,
+    IReadOnlyList<CountryBaselineClassificationDto> GlobalMachineLearning,
     DateTimeOffset GeneratedAtUtc);
 
-public sealed record PeruDailyFeatureDto(
+public sealed record CountryDailyFeatureDto(
+    string CountryCode,
+    string CountryName,
     DateOnly Date,
     int EarthquakeCount,
     int SignificantEarthquakeCount,
@@ -98,7 +101,9 @@ public sealed record FeatureInfluenceDto(
     double Weight,
     string Direction);
 
-public sealed record PeruBaselineClassificationDto(
+public sealed record CountryBaselineClassificationDto(
+    string CountryCode,
+    string CountryName,
     bool IsReady,
     string ModelName,
     string Summary,
@@ -127,6 +132,7 @@ public sealed class IngestionOptions
     public bool Enabled { get; set; } = true;
     public int PollingIntervalSeconds { get; set; } = 60;
     public int QueryLookbackHours { get; set; } = 24;
+    public int HistoricalBackfillDays { get; set; } = 365;
     public int RecentEventCount { get; set; } = 100;
     public ClimateIngestionOptions Climate { get; set; } = new();
 }
@@ -139,6 +145,14 @@ public sealed class ClimateIngestionOptions
     public string Longitude { get; set; } = "-75.015";
     public string LocationLabel { get; set; } = "Perú";
     public string Models { get; set; } = "EC_Earth3P_HR,MRI_AGCM3_2_S";
+    public List<ClimateLocationOption> Locations { get; set; } = [];
+}
+
+public sealed class ClimateLocationOption
+{
+    public string Label { get; set; } = string.Empty;
+    public string Latitude { get; set; } = string.Empty;
+    public string Longitude { get; set; } = string.Empty;
 }
 
 public interface IEarthquakeDataSource
@@ -181,13 +195,15 @@ public interface IAnalyticsEngine
 public interface IDashboardService
 {
     Task<DashboardSnapshotDto> GetSnapshotAsync(CancellationToken cancellationToken);
-    Task<IReadOnlyList<PeruDailyFeatureDto>> GetPeruDailyFeaturesAsync(int days, CancellationToken cancellationToken);
+    Task<IReadOnlyList<CountryDailyFeatureDto>> GetCountryDailyFeaturesAsync(string countryCode, int days, CancellationToken cancellationToken);
 }
 
 public interface IMachineLearningService
 {
-    Task<PeruBaselineClassificationDto> BuildPeruBaselineAsync(
-        IReadOnlyList<PeruDailyFeatureDto> features,
+    Task<CountryBaselineClassificationDto> BuildCountryBaselineAsync(
+        string countryCode,
+        string countryName,
+        IReadOnlyList<CountryDailyFeatureDto> features,
         CancellationToken cancellationToken);
 }
 

@@ -16,6 +16,23 @@ using SismoAI.Domain;
 
 namespace SismoAI.Infrastructure;
 
+internal sealed record CountryDefinition(
+    string Code,
+    string Name,
+    double MinLatitude,
+    double MaxLatitude,
+    double MinLongitude,
+    double MaxLongitude,
+    double ExtendedMinLatitude,
+    double ExtendedMaxLatitude,
+    double ExtendedMinLongitude,
+    double ExtendedMaxLongitude,
+    IReadOnlyList<string> CountryKeywords,
+    IReadOnlyList<string> RegionKeywords,
+    IReadOnlyList<string> ForeignKeywords,
+    string? PreferredSource = null,
+    string? ClimateLabel = null);
+
 public sealed class SismoDbContext(DbContextOptions<SismoDbContext> options) : DbContext(options)
 {
     public DbSet<EarthquakeEvent> EarthquakeEvents => Set<EarthquakeEvent>();
@@ -370,6 +387,54 @@ public sealed class DashboardService(
     IMachineLearningService machineLearningService,
     SismoDbContext dbContext) : IDashboardService
 {
+    private static readonly CountryDefinition PeruDefinition = new(
+        "PE",
+        "Perú",
+        -18.6, 0.8, -81.6, -68.2,
+        -21, 2, -84, -66,
+        ["perú", "peru"],
+        ["lima", "ica", "arequipa", "ancash", "áncash", "huari", "cañete", "nasca", "piura", "trujillo", "cusco", "cuzco", "tacna", "moquegua", "puno", "ayacucho", "apurímac", "apurimac", "junín", "junin", "amazonas", "san martín", "san martin", "ucayali", "madre de dios", "huánuco", "huanuco", "pasco", "chiclayo", "chimbote", "callao", "cajamarca", "huancayo", "pucallpa", "tarapoto"],
+        ["chile", "ecuador", "colombia", "bolivia", "brasil", "brazil", "argentina", "venezuela", "jamaica", "costa rica", "mexico", "méxico", "guatemala", "nicaragua", "panama", "panamá", "el salvador", "puerto rico", "united states", "usa", "canada", "canadá"],
+        "IGP",
+        "Perú");
+    private static readonly CountryDefinition UnitedStatesDefinition = new(
+        "US",
+        "Estados Unidos",
+        18.5, 71.5, -179.9, -66.5,
+        15, 72, -180, -60,
+        ["united states", "usa", "alaska", "california", "hawaii", "nevada", "puerto rico"],
+        ["alaska", "california", "hawaii", "nevada", "utah", "washington", "montana", "idaho", "wyoming", "puerto rico"],
+        ["mexico", "méxico", "canada", "canadá", "japan", "japon", "chile", "peru", "perú"],
+        null,
+        "Estados Unidos");
+    private static readonly CountryDefinition JapanDefinition = new(
+        "JP",
+        "Japón",
+        24, 46.5, 122, 146.5,
+        20, 48, 120, 150,
+        ["japan", "japón", "honshu", "hokkaido", "kyushu", "tokyo"],
+        ["honshu", "hokkaido", "kyushu", "tokyo", "osaka", "sendai", "fukushima", "okinawa"],
+        ["russia", "china", "taiwan", "philippines", "corea", "korea", "alaska"],
+        null,
+        "Japón");
+    private static readonly CountryDefinition ChileDefinition = new(
+        "CL",
+        "Chile",
+        -56, -17, -76, -66,
+        -57, -16, -78, -64,
+        ["chile", "santiago", "antofagasta", "valparaiso", "concepcion"],
+        ["santiago", "antofagasta", "valparaiso", "concepcion", "atacama", "iquique", "coquimbo"],
+        ["peru", "perú", "bolivia", "argentina", "ecuador"],
+        null,
+        "Chile");
+    private static readonly CountryDefinition[] MachineLearningCountries =
+    [
+        PeruDefinition,
+        UnitedStatesDefinition,
+        JapanDefinition,
+        ChileDefinition
+    ];
+
     public async Task<DashboardSnapshotDto> GetSnapshotAsync(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
@@ -422,10 +487,25 @@ public sealed class DashboardService(
                 latestSnapshot.Level,
                 latestSnapshot.Summary,
                 JsonSerializer.Deserialize<List<string>>(latestSnapshot.DriversJson) ?? []);
-        var peruRecent = recent.Where(IsPeruEvent).ToList();
+        var peruRecent = recent.Where(x => IsCountryEvent(x, PeruDefinition)).ToList();
         var peruAnalytics = analyticsEngine.Analyze(peruRecent.Take(50).ToList());
-        var peruDailyFeatures = await GetPeruDailyFeaturesAsync(365, cancellationToken);
-        var peruMachineLearning = await machineLearningService.BuildPeruBaselineAsync(peruDailyFeatures, cancellationToken);
+            var peruDailyFeatures = await GetCountryDailyFeaturesAsync(PeruDefinition.Code, 3650, cancellationToken);
+        var peruMachineLearning = await machineLearningService.BuildCountryBaselineAsync(
+            PeruDefinition.Code,
+            PeruDefinition.Name,
+            peruDailyFeatures,
+            cancellationToken);
+        var globalMachineLearning = new List<CountryBaselineClassificationDto>(MachineLearningCountries.Length);
+        foreach (var country in MachineLearningCountries)
+        {
+            var features = country.Code == PeruDefinition.Code
+                ? peruDailyFeatures
+                : await GetCountryDailyFeaturesAsync(country.Code, 3650, cancellationToken);
+            var baseline = country.Code == PeruDefinition.Code
+                ? peruMachineLearning
+                : await machineLearningService.BuildCountryBaselineAsync(country.Code, country.Name, features, cancellationToken);
+            globalMachineLearning.Add(baseline);
+        }
 
         return new DashboardSnapshotDto(
             latestEvents,
@@ -446,19 +526,23 @@ public sealed class DashboardService(
             peruAnalytics.Summary,
             peruAnalytics.Drivers,
             peruMachineLearning,
+            globalMachineLearning,
             now);
     }
 
-    public async Task<IReadOnlyList<PeruDailyFeatureDto>> GetPeruDailyFeaturesAsync(int days, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<CountryDailyFeatureDto>> GetCountryDailyFeaturesAsync(string countryCode, int days, CancellationToken cancellationToken)
     {
-        var normalizedDays = Math.Clamp(days, 30, 1095);
+        var country = MachineLearningCountries.FirstOrDefault(x => string.Equals(x.Code, countryCode, StringComparison.OrdinalIgnoreCase))
+            ?? PeruDefinition;
+            var normalizedDays = Math.Clamp(days, 30, 3650);
         var sinceUtc = DateTimeOffset.UtcNow.AddDays(-normalizedDays);
         var earthquakes = (await earthquakeRepository.GetSinceAsync(sinceUtc, cancellationToken))
-            .Where(IsPeruEvent)
+            .Where(x => IsCountryEvent(x, country))
             .ToList();
         var climate = await dbContext.ClimateDailyObservations
             .AsNoTracking()
-            .Where(x => x.LocationLabel == "Perú" && x.ObservationDate >= DateOnly.FromDateTime(sinceUtc.UtcDateTime.Date))
+            .Where(x => x.LocationLabel == (country.ClimateLabel ?? country.Name)
+                && x.ObservationDate >= DateOnly.FromDateTime(sinceUtc.UtcDateTime.Date))
             .OrderBy(x => x.ObservationDate)
             .ToListAsync(cancellationToken);
 
@@ -481,7 +565,7 @@ public sealed class DashboardService(
             .OrderBy(x => x)
             .ToList();
 
-        var result = new List<PeruDailyFeatureDto>(allDates.Count);
+        var result = new List<CountryDailyFeatureDto>(allDates.Count);
         foreach (var date in allDates)
         {
             earthquakeByDate.TryGetValue(date, out var dayEarthquakes);
@@ -491,7 +575,9 @@ public sealed class DashboardService(
             earthquakeByDate.TryGetValue(nextDate, out var nextDayEarthquakes);
             var nextEvents = nextDayEarthquakes ?? [];
 
-            result.Add(new PeruDailyFeatureDto(
+            result.Add(new CountryDailyFeatureDto(
+                country.Code,
+                country.Name,
                 date,
                 events.Count,
                 events.Count(x => x.Magnitude >= 4.5),
@@ -536,97 +622,39 @@ public sealed class DashboardService(
             .ToList();
     }
 
-    private static bool IsPeruEvent(EarthquakeEvent earthquakeEvent)
+    private static bool IsCountryEvent(EarthquakeEvent earthquakeEvent, CountryDefinition definition)
     {
-        if (string.Equals(earthquakeEvent.Source, "IGP", StringComparison.OrdinalIgnoreCase))
+        if (!string.IsNullOrWhiteSpace(definition.PreferredSource)
+            && string.Equals(earthquakeEvent.Source, definition.PreferredSource, StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
-        if (earthquakeEvent.Latitude >= -18.6
-            && earthquakeEvent.Latitude <= 0.8
-            && earthquakeEvent.Longitude >= -81.6
-            && earthquakeEvent.Longitude <= -68.2)
+        if (earthquakeEvent.Latitude >= definition.MinLatitude
+            && earthquakeEvent.Latitude <= definition.MaxLatitude
+            && earthquakeEvent.Longitude >= definition.MinLongitude
+            && earthquakeEvent.Longitude <= definition.MaxLongitude)
         {
             return true;
         }
 
         var location = NormalizeForKeywordMatch(earthquakeEvent.LocationDescription);
-        if (HasKeywordPhrase(location, ["perú", "peru"]))
+        if (HasKeywordPhrase(location, definition.CountryKeywords))
         {
             return true;
         }
 
-        if (HasKeywordPhrase(location, [
-            "chile",
-            "ecuador",
-            "colombia",
-            "bolivia",
-            "brasil",
-            "brazil",
-            "argentina",
-            "venezuela",
-            "jamaica",
-            "costa rica",
-            "mexico",
-            "méxico",
-            "guatemala",
-            "nicaragua",
-            "panama",
-            "panamá",
-            "el salvador",
-            "puerto rico",
-            "united states",
-            "usa",
-            "canada",
-            "canadá"
-        ]))
+        if (HasKeywordPhrase(location, definition.ForeignKeywords))
         {
             return false;
         }
 
-        var isNearPeruBounds = earthquakeEvent.Latitude >= -21
-            && earthquakeEvent.Latitude <= 2
-            && earthquakeEvent.Longitude >= -84
-            && earthquakeEvent.Longitude <= -66;
+        var isNearCountryBounds = earthquakeEvent.Latitude >= definition.ExtendedMinLatitude
+            && earthquakeEvent.Latitude <= definition.ExtendedMaxLatitude
+            && earthquakeEvent.Longitude >= definition.ExtendedMinLongitude
+            && earthquakeEvent.Longitude <= definition.ExtendedMaxLongitude;
 
-        return isNearPeruBounds && HasKeywordPhrase(location, [
-            "lima",
-            "ica",
-            "arequipa",
-            "ancash",
-            "áncash",
-            "huari",
-            "cañete",
-            "nasca",
-            "piura",
-            "trujillo",
-            "cusco",
-            "cuzco",
-            "tacna",
-            "moquegua",
-            "puno",
-            "ayacucho",
-            "apurímac",
-            "apurimac",
-            "junín",
-            "junin",
-            "amazonas",
-            "san martín",
-            "san martin",
-            "ucayali",
-            "madre de dios",
-            "huánuco",
-            "huanuco",
-            "pasco",
-            "chiclayo",
-            "chimbote",
-            "callao",
-            "cajamarca",
-            "huancayo",
-            "pucallpa",
-            "tarapoto"
-        ]);
+        return isNearCountryBounds && HasKeywordPhrase(location, definition.RegionKeywords);
     }
 
     private static string NormalizeForKeywordMatch(string? value)
@@ -698,15 +726,21 @@ public sealed class EarthquakeIngestionWorker(
         var climateDataSource = scope.ServiceProvider.GetRequiredService<OpenMeteoClimateDataSource>();
         var activeSourceNames = dataSources.Select(x => x.Name).ToArray();
 
-        var latestBySource = await earthquakeRepository.GetLatestOriginBySourceAsync(cancellationToken);
-        var lookbackSince = DateTimeOffset.UtcNow.AddHours(-Math.Max(1, options.Value.QueryLookbackHours));
+            var latestBySource = await earthquakeRepository.GetLatestOriginBySourceAsync(cancellationToken);
+            var historicalBackfillDays = Math.Max(1, options.Value.HistoricalBackfillDays);
+            var lookbackSince = DateTimeOffset.UtcNow.AddDays(-historicalBackfillDays);
+            var incrementalSince = DateTimeOffset.UtcNow.AddHours(-Math.Max(1, options.Value.QueryLookbackHours));
         await monitoringRepository.RemoveMissingSourceStatesAsync(activeSourceNames, cancellationToken);
         await monitoringRepository.SaveChangesAsync(cancellationToken);
 
         foreach (var source in dataSources)
         {
-            var lastKnown = latestBySource.TryGetValue(source.Name, out var value) ? value : null;
-            var since = lastKnown?.AddMinutes(-5) ?? lookbackSince;
+                var lastKnown = latestBySource.TryGetValue(source.Name, out var value) ? value : null;
+                var since = lastKnown?.AddMinutes(-5) ?? incrementalSince;
+                if (lastKnown is null)
+                {
+                    since = lookbackSince;
+                }
             var state = new SourceSyncState
             {
                 SourceName = source.Name,
@@ -847,7 +881,29 @@ public sealed class EarthquakeIngestionWorker(
 
     private async Task IngestClimateAsync(SismoDbContext dbContext, OpenMeteoClimateDataSource climateDataSource, CancellationToken cancellationToken)
     {
-        var items = await climateDataSource.GetDailyObservationsAsync(options.Value.Climate, cancellationToken);
+            var climateLocations = options.Value.Climate.Locations.Count > 0
+                ? options.Value.Climate.Locations
+                : [new ClimateLocationOption
+                    {
+                        Label = options.Value.Climate.LocationLabel,
+                        Latitude = options.Value.Climate.Latitude,
+                        Longitude = options.Value.Climate.Longitude
+                    }];
+            var items = new List<ClimateDailyObservation>();
+            foreach (var location in climateLocations)
+            {
+                var locationOptions = new ClimateIngestionOptions
+                {
+                    Enabled = options.Value.Climate.Enabled,
+                    HistoryDays = options.Value.Climate.HistoryDays,
+                    Latitude = location.Latitude,
+                    Longitude = location.Longitude,
+                    LocationLabel = location.Label,
+                    Models = options.Value.Climate.Models,
+                    Locations = []
+                };
+                items.AddRange(await climateDataSource.GetDailyObservationsAsync(locationOptions, cancellationToken));
+            }
         if (items.Count == 0)
         {
             logger.LogInformation("Fuente OpenMeteoClimate: sin observaciones nuevas en el ciclo actual.");
@@ -928,7 +984,7 @@ public sealed class OpenMeteoClimateDataSource(HttpClient httpClient)
         var longitude = double.Parse(options.Longitude, CultureInfo.InvariantCulture);
         var startDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(-Math.Max(7, options.HistoryDays)));
         var endDate = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-        var url = $"v1/climate?latitude={options.Latitude}&longitude={options.Longitude}&start_date={startDate:yyyy-MM-dd}&end_date={endDate:yyyy-MM-dd}&models={Uri.EscapeDataString(options.Models)}&daily={Uri.EscapeDataString(DailyVariables)}&timezone=America%2FLima";
+            var url = $"v1/climate?latitude={options.Latitude}&longitude={options.Longitude}&start_date={startDate:yyyy-MM-dd}&end_date={endDate:yyyy-MM-dd}&models={Uri.EscapeDataString(options.Models)}&daily={Uri.EscapeDataString(DailyVariables)}&timezone=GMT";
         using var response = await httpClient.GetAsync(url, cancellationToken);
         if (response.StatusCode == HttpStatusCode.NoContent)
         {

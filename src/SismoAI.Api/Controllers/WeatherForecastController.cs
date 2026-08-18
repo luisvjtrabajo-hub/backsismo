@@ -14,12 +14,13 @@ public sealed class DashboardController(IDashboardService dashboardService) : Co
         return Ok(snapshot);
     }
 
-    [HttpGet("features/peru-daily")]
-    public async Task<ActionResult<IReadOnlyList<PeruDailyFeatureDto>>> GetPeruDailyFeatures(
+    [HttpGet("features/country-daily")]
+    public async Task<ActionResult<IReadOnlyList<CountryDailyFeatureDto>>> GetCountryDailyFeatures(
+        [FromQuery] string countryCode = "PE",
         [FromQuery] int days = 365,
         CancellationToken cancellationToken = default)
     {
-        var items = await dashboardService.GetPeruDailyFeaturesAsync(days, cancellationToken);
+        var items = await dashboardService.GetCountryDailyFeaturesAsync(countryCode, days, cancellationToken);
         return Ok(items);
     }
 }

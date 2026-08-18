@@ -23,8 +23,10 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         nameof(ModelInput.ShortwaveRadiationSum)
     ];
 
-    public Task<PeruBaselineClassificationDto> BuildPeruBaselineAsync(
-        IReadOnlyList<PeruDailyFeatureDto> features,
+    public Task<CountryBaselineClassificationDto> BuildCountryBaselineAsync(
+        string countryCode,
+        string countryName,
+        IReadOnlyList<CountryDailyFeatureDto> features,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -53,10 +55,12 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
 
         if (usable.Count < 60)
         {
-            return Task.FromResult(new PeruBaselineClassificationDto(
+            return Task.FromResult(new CountryBaselineClassificationDto(
+                countryCode,
+                countryName,
                 false,
                 "SDCA Logistic Regression",
-                "Aún no hay suficientes muestras diarias para entrenar un baseline estable de Perú.",
+                $"Aún no hay suficientes muestras diarias para entrenar un baseline estable de {countryName}.",
                 usable.Count,
                 0,
                 0,
@@ -98,10 +102,13 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         var topNegative = influences.Where(x => x.Weight < 0).Take(4).ToList();
             if (!trainHasBothClasses || !testHasBothClasses)
             {
-                return Task.FromResult(new PeruBaselineClassificationDto(
+                return Task.FromResult(new CountryBaselineClassificationDto(
+                    countryCode,
+                    countryName,
                     false,
                     "SDCA Logistic Regression",
                     BuildInsufficientClassSummary(
+                        countryName,
                         latestScored.Probability,
                         latestScored.PredictedLabel,
                         usable.Count,
@@ -129,12 +136,14 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
             var metrics = mlContext.BinaryClassification.Evaluate(
                 predictions,
                 labelColumnName: nameof(ModelInput.Label));
-            var summary = BuildSummary(metrics, latestScored.Probability, latestScored.PredictedLabel, usable.Count);
+            var summary = BuildSummary(countryName, metrics, latestScored.Probability, latestScored.PredictedLabel, usable.Count);
 
-        return Task.FromResult(new PeruBaselineClassificationDto(
+        return Task.FromResult(new CountryBaselineClassificationDto(
+            countryCode,
+            countryName,
             true,
             "SDCA Logistic Regression",
-            summary,
+            BuildSummary(countryName, metrics, latestScored.Probability, latestScored.PredictedLabel, usable.Count),
             usable.Count,
             trainRows.Count,
             testRows.Count,
@@ -160,15 +169,16 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         return (float)Math.Log10(value + 1);
     }
 
-    private static string BuildSummary(BinaryClassificationMetrics metrics, float probability, bool predictedLabel, int sampleCount)
+    private static string BuildSummary(string countryName, BinaryClassificationMetrics metrics, float probability, bool predictedLabel, int sampleCount)
     {
         var tendency = predictedLabel ? "probabilidad elevada" : "probabilidad baja";
-        return $"Baseline Perú entrenado con {sampleCount} días. " +
+        return $"Baseline {countryName} entrenado con {sampleCount} días. " +
                $"En prueba logró accuracy {metrics.Accuracy:P1} y F1 {metrics.F1Score:P1}. " +
                $"Para el último día observado estima {tendency} de sismo significativo al día siguiente ({probability:P1}).";
     }
 
     private static string BuildInsufficientClassSummary(
+        string countryName,
         float probability,
         bool predictedLabel,
         int sampleCount,
@@ -184,7 +194,7 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
                 ? "entrenamiento"
                 : "prueba";
 
-        return $"Baseline Perú entrenado con {sampleCount} días, pero la partición de {missingPartition} no tuvo ambas clases " +
+        return $"Baseline {countryName} entrenado con {sampleCount} días, pero la partición de {missingPartition} no tuvo ambas clases " +
                $"({trainCount} entrenamiento, {testCount} prueba), así que no se calcularon métricas AUC/F1 confiables. " +
                $"Para el último día observado estima {tendency} de sismo significativo al día siguiente ({probability:P1}).";
     }

@@ -25,9 +25,9 @@ public sealed class ApiSmokeTests : IClassFixture<SismoAiFactory>
     }
 
     [Fact]
-    public async Task PeruDailyFeatures_ReturnsOk()
+    public async Task CountryDailyFeatures_ReturnsOk()
     {
-        var response = await _client.GetAsync("/api/dashboard/features/peru-daily?days=90");
+        var response = await _client.GetAsync("/api/dashboard/features/country-daily?countryCode=PE&days=90");
 
         response.EnsureSuccessStatusCode();
     }
