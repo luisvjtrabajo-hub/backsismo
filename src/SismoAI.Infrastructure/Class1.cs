@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -20,6 +21,7 @@ public sealed class SismoDbContext(DbContextOptions<SismoDbContext> options) : D
     public DbSet<EarthquakeEvent> EarthquakeEvents => Set<EarthquakeEvent>();
     public DbSet<AnomalySnapshot> AnomalySnapshots => Set<AnomalySnapshot>();
     public DbSet<SourceSyncState> SourceSyncStates => Set<SourceSyncState>();
+    public DbSet<ClimateDailyObservation> ClimateDailyObservations => Set<ClimateDailyObservation>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -48,6 +50,15 @@ public sealed class SismoDbContext(DbContextOptions<SismoDbContext> options) : D
             entity.HasIndex(x => x.SourceName).IsUnique();
             entity.Property(x => x.LastError).HasColumnType("text");
         });
+
+        modelBuilder.Entity<ClimateDailyObservation>(entity =>
+        {
+            entity.HasIndex(x => x.ObservationDate);
+            entity.HasIndex(x => x.Model);
+            entity.HasIndex(x => new { x.Latitude, x.Longitude, x.ObservationDate });
+            entity.HasIndex(x => new { x.Dataset, x.Model, x.Latitude, x.Longitude, x.ObservationDate }).IsUnique();
+            entity.Property(x => x.RawPayload).HasColumnType("text");
+        });
     }
 }
 
@@ -64,11 +75,19 @@ public static class DependencyInjection
         {
             if (!string.IsNullOrWhiteSpace(postgres))
             {
-                options.UseNpgsql(postgres);
+                options.UseNpgsql(postgres, npgsqlOptions =>
+                {
+                    npgsqlOptions.CommandTimeout(180);
+                    npgsqlOptions.MaxBatchSize(50);
+                });
             }
             else
             {
-                options.UseSqlite(sqlite);
+                options.UseSqlite(sqlite, sqliteOptions =>
+                {
+                    sqliteOptions.CommandTimeout(180);
+                    sqliteOptions.MaxBatchSize(50);
+                });
             }
         });
 
@@ -91,6 +110,12 @@ public static class DependencyInjection
         services.AddHttpClient<IscDataSource>(client =>
         {
             client.BaseAddress = new Uri("https://www.isc.ac.uk/");
+            client.Timeout = TimeSpan.FromSeconds(45);
+        });
+
+        services.AddHttpClient<OpenMeteoClimateDataSource>(client =>
+        {
+            client.BaseAddress = new Uri("https://climate-api.open-meteo.com/");
             client.Timeout = TimeSpan.FromSeconds(45);
         });
 
@@ -597,6 +622,7 @@ public sealed class EarthquakeIngestionWorker(
         var monitoringRepository = scope.ServiceProvider.GetRequiredService<IMonitoringRepository>();
         var dashboardService = scope.ServiceProvider.GetRequiredService<IDashboardService>();
         var dataSources = scope.ServiceProvider.GetRequiredService<IEnumerable<IEarthquakeDataSource>>();
+        var climateDataSource = scope.ServiceProvider.GetRequiredService<OpenMeteoClimateDataSource>();
         var activeSourceNames = dataSources.Select(x => x.Name).ToArray();
 
         var latestBySource = await earthquakeRepository.GetLatestOriginBySourceAsync(cancellationToken);
@@ -691,6 +717,11 @@ public sealed class EarthquakeIngestionWorker(
             }
         }
 
+        if (options.Value.Climate.Enabled)
+        {
+            await IngestClimateAsync(scope.ServiceProvider.GetRequiredService<SismoDbContext>(), climateDataSource, cancellationToken);
+        }
+
         var recent = await earthquakeRepository.GetRecentAsync(options.Value.RecentEventCount, cancellationToken);
         var analytics = analyticsEngine.Analyze(recent);
 
@@ -739,6 +770,223 @@ public sealed class EarthquakeIngestionWorker(
         }
 
         return string.Join(" | ", details);
+    }
+
+    private async Task IngestClimateAsync(SismoDbContext dbContext, OpenMeteoClimateDataSource climateDataSource, CancellationToken cancellationToken)
+    {
+        var items = await climateDataSource.GetDailyObservationsAsync(options.Value.Climate, cancellationToken);
+        if (items.Count == 0)
+        {
+            logger.LogInformation("Fuente OpenMeteoClimate: sin observaciones nuevas en el ciclo actual.");
+            return;
+        }
+
+        var incomingKeys = items
+            .Select(x => new { x.Dataset, x.Model, x.Latitude, x.Longitude, x.ObservationDate })
+            .ToList();
+        var minDate = incomingKeys.Min(x => x.ObservationDate);
+        var maxDate = incomingKeys.Max(x => x.ObservationDate);
+        var models = incomingKeys.Select(x => x.Model).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        var existing = await dbContext.ClimateDailyObservations
+            .Where(x => x.Dataset == "ClimateAPI"
+                && models.Contains(x.Model)
+                && x.ObservationDate >= minDate
+                && x.ObservationDate <= maxDate)
+            .ToListAsync(cancellationToken);
+
+        var existingLookup = existing.ToDictionary(
+            x => $"{x.Dataset}|{x.Model}|{x.Latitude:F5}|{x.Longitude:F5}|{x.ObservationDate:yyyy-MM-dd}",
+            x => x,
+            StringComparer.OrdinalIgnoreCase);
+
+        var inserted = 0;
+        var updated = 0;
+
+        foreach (var item in items)
+        {
+            var key = $"{item.Dataset}|{item.Model}|{item.Latitude:F5}|{item.Longitude:F5}|{item.ObservationDate:yyyy-MM-dd}";
+            if (!existingLookup.TryGetValue(key, out var existingItem))
+            {
+                await dbContext.ClimateDailyObservations.AddAsync(item, cancellationToken);
+                inserted++;
+                continue;
+            }
+
+            existingItem.LocationLabel = item.LocationLabel;
+            existingItem.Temperature2mMean = item.Temperature2mMean;
+            existingItem.Temperature2mMax = item.Temperature2mMax;
+            existingItem.Temperature2mMin = item.Temperature2mMin;
+            existingItem.PrecipitationSum = item.PrecipitationSum;
+            existingItem.RainSum = item.RainSum;
+            existingItem.SnowfallSum = item.SnowfallSum;
+            existingItem.RelativeHumidity2mMean = item.RelativeHumidity2mMean;
+            existingItem.RelativeHumidity2mMax = item.RelativeHumidity2mMax;
+            existingItem.RelativeHumidity2mMin = item.RelativeHumidity2mMin;
+            existingItem.WindSpeed10mMean = item.WindSpeed10mMean;
+            existingItem.WindSpeed10mMax = item.WindSpeed10mMax;
+            existingItem.CloudCoverMean = item.CloudCoverMean;
+            existingItem.PressureMslMean = item.PressureMslMean;
+            existingItem.SoilMoisture0To10cmMean = item.SoilMoisture0To10cmMean;
+            existingItem.ShortwaveRadiationSum = item.ShortwaveRadiationSum;
+            existingItem.RawPayload = item.RawPayload;
+            existingItem.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            updated++;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Fuente OpenMeteoClimate: {Inserted} insertados, {Updated} actualizados.",
+            inserted,
+            updated);
+    }
+}
+
+public sealed class OpenMeteoClimateDataSource(HttpClient httpClient)
+{
+    private const string DailyVariables =
+        "temperature_2m_mean,temperature_2m_max,temperature_2m_min,precipitation_sum,rain_sum,snowfall_sum,relative_humidity_2m_mean,relative_humidity_2m_max,relative_humidity_2m_min,wind_speed_10m_mean,wind_speed_10m_max,cloud_cover_mean,pressure_msl_mean,soil_moisture_0_to_10cm_mean,shortwave_radiation_sum";
+
+    public async Task<IReadOnlyList<ClimateDailyObservation>> GetDailyObservationsAsync(
+        ClimateIngestionOptions options,
+        CancellationToken cancellationToken)
+    {
+        var latitude = double.Parse(options.Latitude, CultureInfo.InvariantCulture);
+        var longitude = double.Parse(options.Longitude, CultureInfo.InvariantCulture);
+        var startDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(-Math.Max(7, options.HistoryDays)));
+        var endDate = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var url = $"v1/climate?latitude={options.Latitude}&longitude={options.Longitude}&start_date={startDate:yyyy-MM-dd}&end_date={endDate:yyyy-MM-dd}&models={Uri.EscapeDataString(options.Models)}&daily={Uri.EscapeDataString(DailyVariables)}&timezone=America%2FLima";
+        using var response = await httpClient.GetAsync(url, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NoContent)
+        {
+            return [];
+        }
+
+        response.EnsureSuccessStatusCode();
+        var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return [];
+        }
+
+        var document = JsonSerializer.Deserialize<OpenMeteoClimateResponse>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new OpenMeteoClimateResponse();
+        var models = string.IsNullOrWhiteSpace(options.Models)
+            ? ["EC_Earth3P_HR"]
+            : options.Models.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var result = new List<ClimateDailyObservation>();
+
+        foreach (var model in models)
+        {
+            var daily = document.Daily;
+            if (daily?.Time is null || daily.Time.Count == 0)
+            {
+                continue;
+            }
+
+            for (var index = 0; index < daily.Time.Count; index++)
+            {
+                if (!DateOnly.TryParse(daily.Time[index], CultureInfo.InvariantCulture, DateTimeStyles.None, out var observationDate))
+                {
+                    continue;
+                }
+
+                result.Add(new ClimateDailyObservation
+                {
+                    Provider = "OpenMeteo",
+                    Dataset = "ClimateAPI",
+                    Model = model,
+                    Latitude = latitude,
+                    Longitude = longitude,
+                    LocationLabel = options.LocationLabel,
+                    ObservationDate = observationDate,
+                    Temperature2mMean = daily.ReadDouble($"temperature_2m_mean_{model}", index),
+                    Temperature2mMax = daily.ReadDouble($"temperature_2m_max_{model}", index),
+                    Temperature2mMin = daily.ReadDouble($"temperature_2m_min_{model}", index),
+                    PrecipitationSum = daily.ReadDouble($"precipitation_sum_{model}", index),
+                    RainSum = daily.ReadDouble($"rain_sum_{model}", index),
+                    SnowfallSum = daily.ReadDouble($"snowfall_sum_{model}", index),
+                    RelativeHumidity2mMean = daily.ReadDouble($"relative_humidity_2m_mean_{model}", index),
+                    RelativeHumidity2mMax = daily.ReadDouble($"relative_humidity_2m_max_{model}", index),
+                    RelativeHumidity2mMin = daily.ReadDouble($"relative_humidity_2m_min_{model}", index),
+                    WindSpeed10mMean = daily.ReadDouble($"wind_speed_10m_mean_{model}", index),
+                    WindSpeed10mMax = daily.ReadDouble($"wind_speed_10m_max_{model}", index),
+                    CloudCoverMean = daily.ReadDouble($"cloud_cover_mean_{model}", index),
+                    PressureMslMean = daily.ReadDouble($"pressure_msl_mean_{model}", index),
+                    SoilMoisture0To10cmMean = daily.ReadDouble($"soil_moisture_0_to_10cm_mean_{model}", index),
+                    ShortwaveRadiationSum = daily.ReadDouble($"shortwave_radiation_sum_{model}", index),
+                    RawPayload = BuildClimateRowPayload(
+                        model,
+                        options.LocationLabel,
+                        observationDate,
+                        latitude,
+                        longitude,
+                        daily.ReadDouble($"temperature_2m_mean_{model}", index),
+                        daily.ReadDouble($"precipitation_sum_{model}", index),
+                        daily.ReadDouble($"pressure_msl_mean_{model}", index))
+                });
+            }
+        }
+
+        return result;
+    }
+
+    private static string BuildClimateRowPayload(
+        string model,
+        string locationLabel,
+        DateOnly observationDate,
+        double latitude,
+        double longitude,
+        double? temperature2mMean,
+        double? precipitationSum,
+        double? pressureMslMean)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            model,
+            locationLabel,
+            observationDate,
+            latitude,
+            longitude,
+            temperature2mMean,
+            precipitationSum,
+            pressureMslMean
+        });
+    }
+
+    private sealed class OpenMeteoClimateResponse
+    {
+        public OpenMeteoClimateDaily? Daily { get; set; }
+    }
+
+    private sealed class OpenMeteoClimateDaily
+    {
+        public List<string> Time { get; set; } = [];
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement> Series { get; set; } = [];
+
+        public double? ReadDouble(string key, int index)
+        {
+            if (!Series.TryGetValue(key, out var element)
+                || element.ValueKind != JsonValueKind.Array
+                || index < 0
+                || index >= element.GetArrayLength())
+            {
+                return null;
+            }
+
+            var item = element[index];
+            if (item.ValueKind == JsonValueKind.Null)
+            {
+                return null;
+            }
+
+            return item.ValueKind == JsonValueKind.Number
+                ? item.GetDouble()
+                : double.TryParse(item.GetString(), CultureInfo.InvariantCulture, out var value)
+                    ? value
+                    : null;
+        }
     }
 }
 

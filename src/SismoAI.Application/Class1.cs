@@ -84,6 +84,17 @@ public sealed class IngestionOptions
     public int PollingIntervalSeconds { get; set; } = 60;
     public int QueryLookbackHours { get; set; } = 24;
     public int RecentEventCount { get; set; } = 100;
+    public ClimateIngestionOptions Climate { get; set; } = new();
+}
+
+public sealed class ClimateIngestionOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int HistoryDays { get; set; } = 365;
+    public string Latitude { get; set; } = "-9.19";
+    public string Longitude { get; set; } = "-75.015";
+    public string LocationLabel { get; set; } = "Perú";
+    public string Models { get; set; } = "EC_Earth3P_HR,MRI_AGCM3_2_S";
 }
 
 public interface IEarthquakeDataSource

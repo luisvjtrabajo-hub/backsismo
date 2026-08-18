@@ -46,6 +46,7 @@ public sealed class EarthquakesController(
             canConnect,
             ingestionEnabled = configuration.GetValue("Ingestion:Enabled", true),
             earthquakes = await dbContext.EarthquakeEvents.CountAsync(cancellationToken),
+            climateDailyObservations = await dbContext.ClimateDailyObservations.CountAsync(cancellationToken),
             snapshots = await dbContext.AnomalySnapshots.CountAsync(cancellationToken),
             sources = await dbContext.SourceSyncStates.CountAsync(cancellationToken)
         });

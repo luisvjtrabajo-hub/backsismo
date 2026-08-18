@@ -44,3 +44,33 @@ public sealed class SourceSyncState
     public string LastError { get; set; } = string.Empty;
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 }
+
+public sealed class ClimateDailyObservation
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Provider { get; set; } = "OpenMeteo";
+    public string Dataset { get; set; } = "ClimateAPI";
+    public string Model { get; set; } = string.Empty;
+    public double Latitude { get; set; }
+    public double Longitude { get; set; }
+    public string LocationLabel { get; set; } = string.Empty;
+    public DateOnly ObservationDate { get; set; }
+    public double? Temperature2mMean { get; set; }
+    public double? Temperature2mMax { get; set; }
+    public double? Temperature2mMin { get; set; }
+    public double? PrecipitationSum { get; set; }
+    public double? RainSum { get; set; }
+    public double? SnowfallSum { get; set; }
+    public double? RelativeHumidity2mMean { get; set; }
+    public double? RelativeHumidity2mMax { get; set; }
+    public double? RelativeHumidity2mMin { get; set; }
+    public double? WindSpeed10mMean { get; set; }
+    public double? WindSpeed10mMax { get; set; }
+    public double? CloudCoverMean { get; set; }
+    public double? PressureMslMean { get; set; }
+    public double? SoilMoisture0To10cmMean { get; set; }
+    public double? ShortwaveRadiationSum { get; set; }
+    public string RawPayload { get; set; } = "{}";
+    public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+}
