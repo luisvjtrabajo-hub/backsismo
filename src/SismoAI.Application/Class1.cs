@@ -70,7 +70,51 @@ public sealed record DashboardSnapshotDto(
     string CurrentPeruAnomalyLevel,
     string CurrentPeruSummary,
     IReadOnlyList<string> PeruTopDrivers,
+    PeruBaselineClassificationDto PeruMachineLearning,
     DateTimeOffset GeneratedAtUtc);
+
+public sealed record PeruDailyFeatureDto(
+    DateOnly Date,
+    int EarthquakeCount,
+    int SignificantEarthquakeCount,
+    double MaxMagnitude,
+    double MeanMagnitude,
+    double MeanDepthKm,
+    double TotalEnergyJoules,
+    double? Temperature2mMean,
+    double? Temperature2mMax,
+    double? Temperature2mMin,
+    double? PrecipitationSum,
+    double? PressureMslMean,
+    double? RelativeHumidity2mMean,
+    double? WindSpeed10mMean,
+    double? SoilMoisture0To10cmMean,
+    double? ShortwaveRadiationSum,
+    int NextDayEarthquakeCount,
+    bool NextDayHadSignificantEarthquake);
+
+public sealed record FeatureInfluenceDto(
+    string Name,
+    double Weight,
+    string Direction);
+
+public sealed record PeruBaselineClassificationDto(
+    bool IsReady,
+    string ModelName,
+    string Summary,
+    int TotalSamples,
+    int TrainingSamples,
+    int TestSamples,
+    double PositiveRate,
+    double Accuracy,
+    double F1Score,
+    double AreaUnderRocCurve,
+    double AreaUnderPrecisionRecallCurve,
+    double LatestProbability,
+    bool LatestPrediction,
+    DateOnly? LatestFeatureDate,
+    IReadOnlyList<FeatureInfluenceDto> TopPositiveSignals,
+    IReadOnlyList<FeatureInfluenceDto> TopNegativeSignals);
 
 public sealed record AnalyticsResult(
     double AnomalyScore,
@@ -137,6 +181,14 @@ public interface IAnalyticsEngine
 public interface IDashboardService
 {
     Task<DashboardSnapshotDto> GetSnapshotAsync(CancellationToken cancellationToken);
+    Task<IReadOnlyList<PeruDailyFeatureDto>> GetPeruDailyFeaturesAsync(int days, CancellationToken cancellationToken);
+}
+
+public interface IMachineLearningService
+{
+    Task<PeruBaselineClassificationDto> BuildPeruBaselineAsync(
+        IReadOnlyList<PeruDailyFeatureDto> features,
+        CancellationToken cancellationToken);
 }
 
 public interface IRealtimeNotifier

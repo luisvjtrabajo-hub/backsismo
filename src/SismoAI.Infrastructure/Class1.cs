@@ -366,7 +366,9 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
 public sealed class DashboardService(
     IEarthquakeRepository earthquakeRepository,
     IMonitoringRepository monitoringRepository,
-    IAnalyticsEngine analyticsEngine) : IDashboardService
+    IAnalyticsEngine analyticsEngine,
+    IMachineLearningService machineLearningService,
+    SismoDbContext dbContext) : IDashboardService
 {
     public async Task<DashboardSnapshotDto> GetSnapshotAsync(CancellationToken cancellationToken)
     {
@@ -422,6 +424,8 @@ public sealed class DashboardService(
                 JsonSerializer.Deserialize<List<string>>(latestSnapshot.DriversJson) ?? []);
         var peruRecent = recent.Where(IsPeruEvent).ToList();
         var peruAnalytics = analyticsEngine.Analyze(peruRecent.Take(50).ToList());
+        var peruDailyFeatures = await GetPeruDailyFeaturesAsync(365, cancellationToken);
+        var peruMachineLearning = await machineLearningService.BuildPeruBaselineAsync(peruDailyFeatures, cancellationToken);
 
         return new DashboardSnapshotDto(
             latestEvents,
@@ -441,7 +445,76 @@ public sealed class DashboardService(
             peruAnalytics.Level,
             peruAnalytics.Summary,
             peruAnalytics.Drivers,
+            peruMachineLearning,
             now);
+    }
+
+    public async Task<IReadOnlyList<PeruDailyFeatureDto>> GetPeruDailyFeaturesAsync(int days, CancellationToken cancellationToken)
+    {
+        var normalizedDays = Math.Clamp(days, 30, 1095);
+        var sinceUtc = DateTimeOffset.UtcNow.AddDays(-normalizedDays);
+        var earthquakes = (await earthquakeRepository.GetSinceAsync(sinceUtc, cancellationToken))
+            .Where(IsPeruEvent)
+            .ToList();
+        var climate = await dbContext.ClimateDailyObservations
+            .AsNoTracking()
+            .Where(x => x.LocationLabel == "Perú" && x.ObservationDate >= DateOnly.FromDateTime(sinceUtc.UtcDateTime.Date))
+            .OrderBy(x => x.ObservationDate)
+            .ToListAsync(cancellationToken);
+
+        var climateByDate = climate
+            .GroupBy(x => x.ObservationDate)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(x => x.Model == "EC_Earth3P_HR")
+                    .ThenBy(x => x.Model)
+                    .First());
+
+        var earthquakeByDate = earthquakes
+            .GroupBy(x => DateOnly.FromDateTime(x.OriginTimeUtc.UtcDateTime.Date))
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        var allDates = climateByDate.Keys
+            .Concat(earthquakeByDate.Keys)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+
+        var result = new List<PeruDailyFeatureDto>(allDates.Count);
+        foreach (var date in allDates)
+        {
+            earthquakeByDate.TryGetValue(date, out var dayEarthquakes);
+            climateByDate.TryGetValue(date, out var dayClimate);
+            var events = dayEarthquakes ?? [];
+            var nextDate = date.AddDays(1);
+            earthquakeByDate.TryGetValue(nextDate, out var nextDayEarthquakes);
+            var nextEvents = nextDayEarthquakes ?? [];
+
+            result.Add(new PeruDailyFeatureDto(
+                date,
+                events.Count,
+                events.Count(x => x.Magnitude >= 4.5),
+                events.Count == 0 ? 0 : events.Max(x => x.Magnitude),
+                events.Count == 0 ? 0 : Math.Round(events.Average(x => x.Magnitude), 3),
+                events.Count == 0 ? 0 : Math.Round(events.Average(x => x.DepthKm), 3),
+                Math.Round(events.Sum(x => x.ApproximateEnergyJoules), 3),
+                dayClimate?.Temperature2mMean,
+                dayClimate?.Temperature2mMax,
+                dayClimate?.Temperature2mMin,
+                dayClimate?.PrecipitationSum,
+                dayClimate?.PressureMslMean,
+                dayClimate?.RelativeHumidity2mMean,
+                dayClimate?.WindSpeed10mMean,
+                dayClimate?.SoilMoisture0To10cmMean,
+                dayClimate?.ShortwaveRadiationSum,
+                nextEvents.Count,
+                nextEvents.Any(x => x.Magnitude >= 4.5)));
+        }
+
+        return result
+            .OrderByDescending(x => x.Date)
+            .ToList();
     }
 
     private static IReadOnlyList<ClusterDto> BuildGeoClusters(IReadOnlyList<EarthquakeEvent> events, double bucketSize, string prefix)

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using SismoAI.Analytics;
 using SismoAI.Application;
 using SismoAI.Infrastructure;
+using SismoAI.MachineLearning;
 
 var builder = WebApplication.CreateBuilder(args);
 var renderPort = Environment.GetEnvironmentVariable("PORT");
@@ -46,6 +47,7 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddSingleton<IAnalyticsEngine, StatisticalAnalyticsEngine>();
+builder.Services.AddSingleton<IMachineLearningService, BaselinePeruMachineLearningService>();
 builder.Services.AddSingleton<IRealtimeNotifier, SignalRRealtimeNotifier>();
 builder.Services.AddSismoInfrastructure(builder.Configuration);
 

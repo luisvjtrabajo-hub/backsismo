@@ -19,6 +19,7 @@
     <ProjectReference Include="..\SismoAI.Domain\SismoAI.Domain.csproj" />
     <ProjectReference Include="..\SismoAI.Infrastructure\SismoAI.Infrastructure.csproj" />
     <ProjectReference Include="..\SismoAI.Analytics\SismoAI.Analytics.csproj" />
+    <ProjectReference Include="..\SismoAI.MachineLearning\SismoAI.MachineLearning.csproj" />
   </ItemGroup>
 
 </Project>

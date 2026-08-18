@@ -13,4 +13,13 @@ public sealed class DashboardController(IDashboardService dashboardService) : Co
         var snapshot = await dashboardService.GetSnapshotAsync(cancellationToken);
         return Ok(snapshot);
     }
+
+    [HttpGet("features/peru-daily")]
+    public async Task<ActionResult<IReadOnlyList<PeruDailyFeatureDto>>> GetPeruDailyFeatures(
+        [FromQuery] int days = 365,
+        CancellationToken cancellationToken = default)
+    {
+        var items = await dashboardService.GetPeruDailyFeaturesAsync(days, cancellationToken);
+        return Ok(items);
+    }
 }

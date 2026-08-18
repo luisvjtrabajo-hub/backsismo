@@ -23,6 +23,22 @@ public sealed class ApiSmokeTests : IClassFixture<SismoAiFactory>
 
         response.EnsureSuccessStatusCode();
     }
+
+    [Fact]
+    public async Task PeruDailyFeatures_ReturnsOk()
+    {
+        var response = await _client.GetAsync("/api/dashboard/features/peru-daily?days=90");
+
+        response.EnsureSuccessStatusCode();
+    }
+
+    [Fact]
+    public async Task Dashboard_ReturnsOk()
+    {
+        var response = await _client.GetAsync("/api/dashboard");
+
+        response.EnsureSuccessStatusCode();
+    }
 }
 
 public sealed class SismoAiFactory : WebApplicationFactory<Program>
