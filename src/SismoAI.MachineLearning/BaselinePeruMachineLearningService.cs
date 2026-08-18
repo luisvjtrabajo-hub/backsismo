@@ -13,6 +13,7 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
     private const int MinimumTestSamples = 20;
     private const double TrainingPositiveRatioTarget = 0.35;
     private const int CalibrationBinCount = 10;
+    private const int MinimumPopulatedCalibrationBins = 3;
 
     private static readonly string[] SeismicFeatureColumns =
     [
@@ -571,9 +572,9 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
             bins.Add(new CalibrationBin(lower, upper, Math.Clamp(calibratedProbability, 1e-6, 1 - 1e-6)));
         }
 
-        if (bins.Count == 0)
+        if (bins.Count < MinimumPopulatedCalibrationBins)
         {
-            return new CalibrationMapping([], "Sin calibracion");
+            return new CalibrationMapping([], $"Sin calibracion explicita: solo {bins.Count} bins poblados en validacion");
         }
 
         return new CalibrationMapping(
@@ -802,9 +803,10 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
     {
         var tendency = evaluation.Recall > 0 ? "logra recuperar parte de los positivos" : "sigue sin recuperar positivos";
         var trivialAccuracy = 1d - evaluation.PositiveRate;
+        var predictionPattern = DescribePredictionPattern(evaluation.ConfusionMatrix);
         return $"La variante {variantName.ToLowerInvariant()} de {countryName} se entreno con {trainCount} dias, ajusto el threshold en validacion temporal ({validationCount} dias) y se evaluo en test ({testCount} dias). " +
                $"Uso threshold {threshold:P1}; en test logro PR AUC {evaluation.AreaUnderPrecisionRecallCurve:P1}, ROC AUC {evaluation.AreaUnderRocCurve:P1}, recall {evaluation.Recall:P1}, precision {evaluation.Precision:P1}, F1 {evaluation.F1Score:P1}, balanced accuracy {evaluation.BalancedAccuracy:P1} y MCC {evaluation.MatthewsCorrelationCoefficient:F3}. " +
-               $"Frente al baseline trivial de 'no habra sismo significativo' ({trivialAccuracy:P1} accuracy y F1 0.0%), {tendency}. {calibrationMethod}.";
+               $"Frente al baseline trivial de 'no habra sismo significativo' ({trivialAccuracy:P1} accuracy y F1 0.0%), {tendency}. {predictionPattern}. {calibrationMethod}.";
     }
 
     private static string BuildInsufficientTrainingSummary(
@@ -854,8 +856,27 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         string calibrationMethod,
         EvaluationMetrics evaluation)
     {
+        var predictionPattern = DescribePredictionPattern(evaluation.ConfusionMatrix);
         return $"La variante {variantName.ToLowerInvariant()} de {countryName} se entreno con {trainCount} dias, ajusto threshold {threshold:P1} con validacion temporal ({validationCount} dias) y se probo sobre {testCount} dias, " +
-               $"pero el test no tuvo ambas clases. Se reportan solo metricas de clasificacion disponibles: recall {evaluation.Recall:P1}, precision {evaluation.Precision:P1}, F1 {evaluation.F1Score:P1}, balanced accuracy {evaluation.BalancedAccuracy:P1} y MCC {evaluation.MatthewsCorrelationCoefficient:F3}. {calibrationMethod}.";
+               $"pero el test no tuvo ambas clases. Se reportan solo metricas de clasificacion disponibles: recall {evaluation.Recall:P1}, precision {evaluation.Precision:P1}, F1 {evaluation.F1Score:P1}, balanced accuracy {evaluation.BalancedAccuracy:P1} y MCC {evaluation.MatthewsCorrelationCoefficient:F3}. {predictionPattern}. {calibrationMethod}.";
+    }
+
+    private static string DescribePredictionPattern(ConfusionMatrixDto confusionMatrix)
+    {
+        var predictedPositive = confusionMatrix.TruePositives + confusionMatrix.FalsePositives;
+        var predictedNegative = confusionMatrix.TrueNegatives + confusionMatrix.FalseNegatives;
+
+        if (predictedPositive > 0 && predictedNegative == 0)
+        {
+            return "En esta ventana de test el modelo marco todos los dias como positivos";
+        }
+
+        if (predictedNegative > 0 && predictedPositive == 0)
+        {
+            return "En esta ventana de test el modelo marco todos los dias como negativos";
+        }
+
+        return "En esta ventana de test el modelo si diferencio entre positivos y negativos";
     }
 
     private static ConfusionMatrixDto EmptyConfusionMatrix()
@@ -1070,9 +1091,19 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         IReadOnlyList<FeatureInfluenceDto> TopPositiveSignals,
         IReadOnlyList<FeatureInfluenceDto> TopNegativeSignals)
     {
-        public double TestPositiveRate => Recall + Specificity == 0
-            ? 0
-            : 1 - ((2 * BalancedAccuracy) - Recall);
+        public double TestPositiveRate
+        {
+            get
+            {
+                var total = ConfusionMatrix.TruePositives + ConfusionMatrix.FalsePositives + ConfusionMatrix.TrueNegatives + ConfusionMatrix.FalseNegatives;
+                if (total == 0)
+                {
+                    return 0;
+                }
+
+                return (ConfusionMatrix.TruePositives + ConfusionMatrix.FalseNegatives) / (double)total;
+            }
+        }
     }
 
     private sealed record CalibrationMapping(
