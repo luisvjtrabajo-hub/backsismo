@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.HttpOverrides;
 using System.Collections.Generic;
+using Microsoft.Extensions.Logging;
 using SismoAI.Analytics;
 using SismoAI.Application;
 using SismoAI.Infrastructure;
@@ -53,7 +54,12 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<SismoDbContext>();
+    var startupLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
     await dbContext.Database.EnsureCreatedAsync();
+    startupLogger.LogInformation(
+        "Proveedor de base de datos activo: {Provider}. Conexion disponible: {CanConnect}.",
+        dbContext.Database.ProviderName ?? "desconocido",
+        await dbContext.Database.CanConnectAsync());
 }
 
 if (app.Environment.IsDevelopment())

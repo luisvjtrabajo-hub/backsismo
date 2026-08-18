@@ -484,12 +484,23 @@ public sealed class EarthquakeIngestionWorker(
             {
                 var items = await source.GetRecentEarthquakesAsync(since, cancellationToken);
                 var inserted = 0;
+                var skippedDuplicatesInBatch = 0;
+                var skippedAlreadyPersisted = 0;
                 DateTimeOffset? newestOrigin = lastKnown;
+                var pendingKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var item in items.OrderBy(x => x.OriginTimeUtc))
                 {
+                    var dedupeKey = $"{item.Source}::{item.SourceEventId}";
+                    if (!pendingKeys.Add(dedupeKey))
+                    {
+                        skippedDuplicatesInBatch++;
+                        continue;
+                    }
+
                     if (await earthquakeRepository.ExistsAsync(item.Source, item.SourceEventId, cancellationToken))
                     {
+                        skippedAlreadyPersisted++;
                         continue;
                     }
 
@@ -520,7 +531,15 @@ public sealed class EarthquakeIngestionWorker(
                 state.LastSuccessUtc = DateTimeOffset.UtcNow;
                 state.LastIngestedEventUtc = newestOrigin;
                 state.ConsecutiveFailures = 0;
-                state.LastError = inserted == 0 ? "Sin eventos nuevos en el ciclo actual." : string.Empty;
+                state.LastError = BuildIngestionStatusMessage(inserted, skippedAlreadyPersisted, skippedDuplicatesInBatch);
+                await monitoringRepository.UpsertSourceStateAsync(state, cancellationToken);
+                await monitoringRepository.SaveChangesAsync(cancellationToken);
+                logger.LogInformation(
+                    "Fuente {SourceName}: {Inserted} insertados, {SkippedPersisted} ya existentes, {SkippedBatch} duplicados en lote.",
+                    source.Name,
+                    inserted,
+                    skippedAlreadyPersisted,
+                    skippedDuplicatesInBatch);
             }
             catch (Exception exception)
             {
@@ -533,10 +552,9 @@ public sealed class EarthquakeIngestionWorker(
                 state.LastIngestedEventUtc = previous?.LastIngestedEventUtc;
                 state.ConsecutiveFailures = (previous?.ConsecutiveFailures ?? 0) + 1;
                 state.LastError = exception.Message;
+                await monitoringRepository.UpsertSourceStateAsync(state, cancellationToken);
+                await monitoringRepository.SaveChangesAsync(cancellationToken);
             }
-
-            await monitoringRepository.UpsertSourceStateAsync(state, cancellationToken);
-            await monitoringRepository.SaveChangesAsync(cancellationToken);
         }
 
         var recent = await earthquakeRepository.GetRecentAsync(options.Value.RecentEventCount, cancellationToken);
@@ -561,6 +579,32 @@ public sealed class EarthquakeIngestionWorker(
     private static double ApproximateEnergy(double magnitude)
     {
         return Math.Pow(10, 1.5 * magnitude + 4.8);
+    }
+
+    private static string BuildIngestionStatusMessage(int inserted, int skippedAlreadyPersisted, int skippedDuplicatesInBatch)
+    {
+        if (inserted == 0 && skippedAlreadyPersisted == 0 && skippedDuplicatesInBatch == 0)
+        {
+            return "Sin eventos nuevos en el ciclo actual.";
+        }
+
+        var details = new List<string>();
+        if (inserted > 0)
+        {
+            details.Add($"{inserted} nuevos");
+        }
+
+        if (skippedAlreadyPersisted > 0)
+        {
+            details.Add($"{skippedAlreadyPersisted} ya existentes");
+        }
+
+        if (skippedDuplicatesInBatch > 0)
+        {
+            details.Add($"{skippedDuplicatesInBatch} duplicados en lote");
+        }
+
+        return string.Join(" | ", details);
     }
 }
 
@@ -756,8 +800,18 @@ public sealed class IscDataSource(HttpClient httpClient) : IEarthquakeDataSource
         var url = $"{BaseUrl}fdsnws/event/1/query?format=xml&orderby=time&minmagnitude=1&starttime={Uri.EscapeDataString(startTime)}";
         using var response = await httpClient.GetAsync(url, cancellationToken);
 
+        if (response.StatusCode == System.Net.HttpStatusCode.NoContent)
+        {
+            return [];
+        }
+
         response.EnsureSuccessStatusCode();
         var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return [];
+        }
+
         var document = XDocument.Parse(payload);
 
         return document
