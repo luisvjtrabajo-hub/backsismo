@@ -457,23 +457,6 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
                 topNegative);
         }
 
-        if (!HasBothClasses(validationRows))
-        {
-            var fallbackProbability = trainRows.Count == 0 ? 0 : trainRows.Count(x => x.Label) / (double)trainRows.Count;
-            return BuildUnavailableVariant(
-                definition,
-                BuildInsufficientValidationSummary(countryName, definition.Name, trainRows.Count, validationRows.Count, testRows.Count, fallbackProbability),
-                "Sin calibracion",
-                trainRows.Count,
-                validationRows.Count,
-                testRows.Count,
-                0.5,
-                fallbackProbability,
-                fallbackProbability >= 0.5,
-                topPositive,
-                topNegative);
-        }
-
         var balancedTrainRows = RebalanceTrainingRows(trainRows);
         var mlContext = new MLContext(seed: 42);
         var trainData = mlContext.Data.LoadFromEnumerable(balancedTrainRows);
@@ -484,10 +467,25 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
                 featureColumnName: "Features"));
 
         var model = pipeline.Fit(trainData);
+        var validationHasBothClasses = HasBothClasses(validationRows);
         var validationScoredRaw = ScoreRows(mlContext, model, validationRows);
-        var calibrator = BuildCalibrator(validationScoredRaw);
+        var calibrator = validationHasBothClasses
+            ? BuildCalibrator(validationScoredRaw)
+            : new CalibrationMapping([], "Sin calibracion: la validacion temporal no tuvo ambas clases y se uso threshold base 50.0%");
         var validationScored = ApplyCalibration(validationScoredRaw, calibrator);
-        var thresholdSelection = FindOptimalThreshold(validationScored);
+        var thresholdSelection = validationHasBothClasses
+            ? FindOptimalThreshold(validationScored)
+            : new ThresholdSelection(
+                0.5,
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0);
         var latestProbability = forecastRow is null
             ? 0
             : ApplyCalibration(ScoreRows(mlContext, model, [forecastRow]), calibrator).First().Probability;
@@ -650,7 +648,8 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         var minimumWindow = MinimumTrainingSamples + MinimumValidationSamples + MinimumTestSamples;
         var preferredTrainSize = MinimumTrainingSamples;
         var preferredValidationSize = MinimumValidationSamples;
-        var candidates = new List<TemporalSplit>();
+        var fullCandidates = new List<TemporalSplit>();
+        var trainOnlyCandidates = new List<TemporalSplit>();
 
         for (var startIndex = 0; startIndex <= sampleCount - minimumWindow; startIndex++)
         {
@@ -670,26 +669,42 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
                         .Skip(trainEnd - startIndex)
                         .Take(validationEnd - trainEnd)
                         .ToList();
-                    if (!HasBothClasses(trainRows) || !HasBothClasses(validationRows))
+                    if (!HasBothClasses(trainRows))
                     {
                         continue;
                     }
 
                     var testRows = rows.Skip(validationEnd).ToList();
-                    candidates.Add(new TemporalSplit(
+                    var candidate = new TemporalSplit(
                         startIndex,
                         trainEnd,
                         validationEnd,
                         HasBothClasses(testRows),
                         validationEnd - startIndex,
-                        Math.Abs((trainEnd - startIndex) - preferredTrainSize) + Math.Abs((validationEnd - trainEnd) - preferredValidationSize)));
+                        Math.Abs((trainEnd - startIndex) - preferredTrainSize) + Math.Abs((validationEnd - trainEnd) - preferredValidationSize));
+
+                    trainOnlyCandidates.Add(candidate);
+                    if (HasBothClasses(validationRows))
+                    {
+                        fullCandidates.Add(candidate);
+                    }
                 }
             }
         }
 
-        if (candidates.Count > 0)
+        if (fullCandidates.Count > 0)
         {
-            return candidates
+            return fullCandidates
+                .OrderByDescending(x => x.TestHasBothClasses)
+                .ThenByDescending(x => x.WindowSize)
+                .ThenBy(x => x.DistanceToPreferred)
+                .ThenByDescending(x => x.StartIndex)
+                .First();
+        }
+
+        if (trainOnlyCandidates.Count > 0)
+        {
+            return trainOnlyCandidates
                 .OrderByDescending(x => x.TestHasBothClasses)
                 .ThenByDescending(x => x.WindowSize)
                 .ThenBy(x => x.DistanceToPreferred)
