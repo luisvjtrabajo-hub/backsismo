@@ -74,3 +74,33 @@ public sealed class ClimateDailyObservation
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 }
+
+public sealed class GeomagneticObservation
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Provider { get; set; } = "USGS";
+    public string ObservatoryCode { get; set; } = string.Empty;
+    public string ObservatoryName { get; set; } = string.Empty;
+    public string CountryCode { get; set; } = string.Empty;
+    public string CountryName { get; set; } = string.Empty;
+    public double Latitude { get; set; }
+    public double Longitude { get; set; }
+    public DateTimeOffset ObservedAtUtc { get; set; }
+    public int SamplingPeriodSeconds { get; set; }
+    public string DataType { get; set; } = "variation";
+    public string SourceFormat { get; set; } = "json";
+    public double? X { get; set; }
+    public double? Y { get; set; }
+    public double? Z { get; set; }
+    public double? F { get; set; }
+    public double? H { get; set; }
+    public double? D { get; set; }
+    public double? G { get; set; }
+    public double? Dst { get; set; }
+    public double? Dist { get; set; }
+    public double? Sq { get; set; }
+    public double? Sv { get; set; }
+    public string RawPayload { get; set; } = "{}";
+    public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+}

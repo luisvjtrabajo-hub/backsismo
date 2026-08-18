@@ -39,6 +39,7 @@ public sealed class SismoDbContext(DbContextOptions<SismoDbContext> options) : D
     public DbSet<AnomalySnapshot> AnomalySnapshots => Set<AnomalySnapshot>();
     public DbSet<SourceSyncState> SourceSyncStates => Set<SourceSyncState>();
     public DbSet<ClimateDailyObservation> ClimateDailyObservations => Set<ClimateDailyObservation>();
+    public DbSet<GeomagneticObservation> GeomagneticObservations => Set<GeomagneticObservation>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -74,6 +75,17 @@ public sealed class SismoDbContext(DbContextOptions<SismoDbContext> options) : D
             entity.HasIndex(x => x.Model);
             entity.HasIndex(x => new { x.Latitude, x.Longitude, x.ObservationDate });
             entity.HasIndex(x => new { x.Dataset, x.Model, x.Latitude, x.Longitude, x.ObservationDate }).IsUnique();
+            entity.Property(x => x.RawPayload).HasColumnType("text");
+        });
+
+        modelBuilder.Entity<GeomagneticObservation>(entity =>
+        {
+            entity.HasIndex(x => x.ObservedAtUtc);
+            entity.HasIndex(x => x.ObservatoryCode);
+            entity.HasIndex(x => x.CountryCode);
+            entity.HasIndex(x => new { x.CountryCode, x.ObservedAtUtc });
+            entity.HasIndex(x => new { x.ObservatoryCode, x.ObservedAtUtc });
+            entity.HasIndex(x => new { x.ObservatoryCode, x.ObservedAtUtc, x.SamplingPeriodSeconds, x.DataType }).IsUnique();
             entity.Property(x => x.RawPayload).HasColumnType("text");
         });
     }
