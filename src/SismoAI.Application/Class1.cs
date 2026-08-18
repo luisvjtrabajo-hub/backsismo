@@ -201,6 +201,7 @@ public interface IEarthquakeRepository
     Task<IReadOnlyList<EarthquakeEvent>> GetSinceAsync(DateTimeOffset sinceUtc, CancellationToken cancellationToken);
     Task<IReadOnlyList<EarthquakeEvent>> GetBetweenAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken cancellationToken);
     Task<Dictionary<string, DateTimeOffset?>> GetLatestOriginBySourceAsync(CancellationToken cancellationToken);
+    Task<Dictionary<string, DateTimeOffset?>> GetOldestOriginBySourceAsync(CancellationToken cancellationToken);
 }
 
 public interface IMonitoringRepository

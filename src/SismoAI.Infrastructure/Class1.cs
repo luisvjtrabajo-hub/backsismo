@@ -324,6 +324,20 @@ public sealed class MonitoringRepository(SismoDbContext dbContext) : IEarthquake
                 group => (DateTimeOffset?)group.Max(x => x.OriginTimeUtc));
     }
 
+    public async Task<Dictionary<string, DateTimeOffset?>> GetOldestOriginBySourceAsync(CancellationToken cancellationToken)
+    {
+        var items = await dbContext.EarthquakeEvents
+            .AsNoTracking()
+            .Select(x => new { x.Source, x.OriginTimeUtc })
+            .ToListAsync(cancellationToken);
+
+        return items
+            .GroupBy(x => x.Source)
+            .ToDictionary(
+                group => group.Key,
+                group => (DateTimeOffset?)group.Min(x => x.OriginTimeUtc));
+    }
+
     public async Task<AnomalySnapshot?> GetLatestSnapshotAsync(CancellationToken cancellationToken)
     {
         var items = await dbContext.AnomalySnapshots
@@ -799,7 +813,8 @@ public sealed class EarthquakeIngestionWorker(
             var geomagnetismDataSource = scope.ServiceProvider.GetRequiredService<UsgsGeomagnetismDataSource>();
         var activeSourceNames = dataSources.Select(x => x.Name).ToArray();
 
-            var latestBySource = await earthquakeRepository.GetLatestOriginBySourceAsync(cancellationToken);
+        var latestBySource = await earthquakeRepository.GetLatestOriginBySourceAsync(cancellationToken);
+        var oldestBySource = await earthquakeRepository.GetOldestOriginBySourceAsync(cancellationToken);
             var historicalBackfillDays = Math.Max(1, options.Value.HistoricalBackfillDays);
             var lookbackSince = DateTimeOffset.UtcNow.AddDays(-historicalBackfillDays);
             var incrementalSince = DateTimeOffset.UtcNow.AddHours(-Math.Max(1, options.Value.QueryLookbackHours));
@@ -808,12 +823,21 @@ public sealed class EarthquakeIngestionWorker(
 
         foreach (var source in dataSources)
         {
-                var lastKnown = latestBySource.TryGetValue(source.Name, out var value) ? value : null;
-                var since = lastKnown?.AddMinutes(-5) ?? incrementalSince;
-                if (lastKnown is null)
+            var lastKnown = latestBySource.TryGetValue(source.Name, out var value) ? value : null;
+            var oldestKnown = oldestBySource.TryGetValue(source.Name, out var oldestValue) ? oldestValue : null;
+            var targetOldest = DateTimeOffset.UtcNow.AddDays(-historicalBackfillDays);
+            var requiresHistoricalCompletion = oldestKnown is null || oldestKnown > targetOldest;
+            var since = lastKnown?.AddMinutes(-5) ?? incrementalSince;
+
+            if (requiresHistoricalCompletion)
+            {
+                since = oldestKnown?.AddMinutes(-5) ?? lookbackSince;
+                if (since > targetOldest)
                 {
-                    since = lookbackSince;
+                    since = targetOldest;
                 }
+            }
+
             var state = new SourceSyncState
             {
                 SourceName = source.Name,
