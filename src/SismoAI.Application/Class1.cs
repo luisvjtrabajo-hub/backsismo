@@ -134,17 +134,37 @@ public sealed record FeatureInfluenceDto(
     double Weight,
     string Direction);
 
+public sealed record ConfusionMatrixDto(
+    int TruePositives,
+    int FalsePositives,
+    int TrueNegatives,
+    int FalseNegatives);
+
 public sealed record BaselineVariantDto(
     string Key,
     string Name,
     bool IsReady,
     string Summary,
+    string CalibrationMethod,
+    int TrainingSamples,
+    int ValidationSamples,
+    int TestSamples,
+    double DecisionThreshold,
     double Accuracy,
+    double BalancedAccuracy,
+    double Precision,
+    double Recall,
+    double Specificity,
     double F1Score,
+    double MatthewsCorrelationCoefficient,
     double AreaUnderRocCurve,
     double AreaUnderPrecisionRecallCurve,
+    double BrierScore,
+    double LogLoss,
+    double CalibrationError,
     double LatestProbability,
-    bool LatestPrediction);
+    bool LatestPrediction,
+    ConfusionMatrixDto ConfusionMatrix);
 
 public sealed record CountryBaselineClassificationDto(
     string CountryCode,
@@ -153,17 +173,29 @@ public sealed record CountryBaselineClassificationDto(
     string SelectedVariantKey,
     string ModelName,
     string Summary,
+    string CalibrationMethod,
     int TotalSamples,
     int TrainingSamples,
+    int ValidationSamples,
     int TestSamples,
     double PositiveRate,
+    double DecisionThreshold,
     double Accuracy,
+    double BalancedAccuracy,
+    double Precision,
+    double Recall,
+    double Specificity,
     double F1Score,
+    double MatthewsCorrelationCoefficient,
     double AreaUnderRocCurve,
     double AreaUnderPrecisionRecallCurve,
+    double BrierScore,
+    double LogLoss,
+    double CalibrationError,
     double LatestProbability,
     bool LatestPrediction,
     DateOnly? LatestFeatureDate,
+    ConfusionMatrixDto ConfusionMatrix,
     IReadOnlyList<BaselineVariantDto> Variants,
     IReadOnlyList<FeatureInfluenceDto> TopPositiveSignals,
     IReadOnlyList<FeatureInfluenceDto> TopNegativeSignals);
