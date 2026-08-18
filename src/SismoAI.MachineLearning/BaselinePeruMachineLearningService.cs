@@ -645,71 +645,18 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
     private static TemporalSplit FindBestTemporalSplit(IReadOnlyList<ModelInput> rows)
     {
         var sampleCount = rows.Count;
-        var minimumWindow = MinimumTrainingSamples + MinimumValidationSamples + MinimumTestSamples;
-        var preferredTrainSize = MinimumTrainingSamples;
-        var preferredValidationSize = MinimumValidationSamples;
-        var fullCandidates = new List<TemporalSplit>();
-        var trainOnlyCandidates = new List<TemporalSplit>();
-
-        for (var startIndex = 0; startIndex <= sampleCount - minimumWindow; startIndex++)
+        foreach (var (validationSize, testSize) in BuildTemporalSearchPlan())
         {
-            var maxTrainEnd = sampleCount - MinimumValidationSamples - MinimumTestSamples;
-            for (var trainEnd = startIndex + MinimumTrainingSamples; trainEnd <= maxTrainEnd; trainEnd++)
+            var candidates = SearchTemporalSplits(rows, validationSize, testSize);
+            if (candidates.FullCandidates.Count > 0)
             {
-                var minValidationEnd = trainEnd + MinimumValidationSamples;
-                var maxValidationEnd = sampleCount - MinimumTestSamples;
-                for (var validationEnd = minValidationEnd; validationEnd <= maxValidationEnd; validationEnd++)
-                {
-                    var windowRows = rows
-                        .Skip(startIndex)
-                        .Take(validationEnd - startIndex)
-                        .ToList();
-                    var trainRows = windowRows.Take(trainEnd - startIndex).ToList();
-                    var validationRows = windowRows
-                        .Skip(trainEnd - startIndex)
-                        .Take(validationEnd - trainEnd)
-                        .ToList();
-                    if (!HasBothClasses(trainRows))
-                    {
-                        continue;
-                    }
-
-                    var testRows = rows.Skip(validationEnd).ToList();
-                    var candidate = new TemporalSplit(
-                        startIndex,
-                        trainEnd,
-                        validationEnd,
-                        HasBothClasses(testRows),
-                        validationEnd - startIndex,
-                        Math.Abs((trainEnd - startIndex) - preferredTrainSize) + Math.Abs((validationEnd - trainEnd) - preferredValidationSize));
-
-                    trainOnlyCandidates.Add(candidate);
-                    if (HasBothClasses(validationRows))
-                    {
-                        fullCandidates.Add(candidate);
-                    }
-                }
+                return RankTemporalCandidates(candidates.FullCandidates).First();
             }
-        }
 
-        if (fullCandidates.Count > 0)
-        {
-            return fullCandidates
-                .OrderByDescending(x => x.TestHasBothClasses)
-                .ThenByDescending(x => x.WindowSize)
-                .ThenBy(x => x.DistanceToPreferred)
-                .ThenByDescending(x => x.StartIndex)
-                .First();
-        }
-
-        if (trainOnlyCandidates.Count > 0)
-        {
-            return trainOnlyCandidates
-                .OrderByDescending(x => x.TestHasBothClasses)
-                .ThenByDescending(x => x.WindowSize)
-                .ThenBy(x => x.DistanceToPreferred)
-                .ThenByDescending(x => x.StartIndex)
-                .First();
+            if (candidates.TrainOnlyCandidates.Count > 0)
+            {
+                return RankTemporalCandidates(candidates.TrainOnlyCandidates).First();
+            }
         }
 
         return new TemporalSplit(
@@ -719,6 +666,93 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
             false,
             sampleCount,
             0);
+    }
+
+    private static IReadOnlyList<(int ValidationSize, int TestSize)> BuildTemporalSearchPlan()
+    {
+        return
+        [
+            (MinimumValidationSamples, MinimumTestSamples),
+            (60, 45),
+            (45, 60),
+            (45, 45),
+            (60, 30),
+            (30, 60),
+            (30, 45),
+            (45, 30),
+            (30, 30)
+        ];
+    }
+
+    private static (List<TemporalSplit> FullCandidates, List<TemporalSplit> TrainOnlyCandidates) SearchTemporalSplits(
+        IReadOnlyList<ModelInput> rows,
+        int validationSize,
+        int testSize)
+    {
+        var sampleCount = rows.Count;
+        var minimumWindow = MinimumTrainingSamples + validationSize + testSize;
+        var preferredTrainSize = MinimumTrainingSamples;
+        var fullCandidates = new List<TemporalSplit>();
+        var trainOnlyCandidates = new List<TemporalSplit>();
+
+        if (sampleCount < minimumWindow)
+        {
+            return (fullCandidates, trainOnlyCandidates);
+        }
+
+        for (var startIndex = 0; startIndex <= sampleCount - minimumWindow; startIndex++)
+        {
+            var maxTrainEnd = sampleCount - validationSize - testSize;
+            for (var trainEnd = startIndex + MinimumTrainingSamples; trainEnd <= maxTrainEnd; trainEnd++)
+            {
+                var validationEnd = trainEnd + validationSize;
+                var testRows = rows.Skip(validationEnd).Take(testSize).ToList();
+                if (testRows.Count < testSize)
+                {
+                    continue;
+                }
+
+                var windowRows = rows
+                    .Skip(startIndex)
+                    .Take(validationEnd - startIndex)
+                    .ToList();
+                var trainRows = windowRows.Take(trainEnd - startIndex).ToList();
+                if (!HasBothClasses(trainRows))
+                {
+                    continue;
+                }
+
+                var validationRows = windowRows
+                    .Skip(trainEnd - startIndex)
+                    .Take(validationSize)
+                    .ToList();
+
+                var candidate = new TemporalSplit(
+                    startIndex,
+                    trainEnd,
+                    validationEnd,
+                    HasBothClasses(testRows),
+                    validationEnd - startIndex,
+                    Math.Abs((trainEnd - startIndex) - preferredTrainSize) + Math.Abs(validationSize - MinimumValidationSamples));
+
+                trainOnlyCandidates.Add(candidate);
+                if (HasBothClasses(validationRows))
+                {
+                    fullCandidates.Add(candidate);
+                }
+            }
+        }
+
+        return (fullCandidates, trainOnlyCandidates);
+    }
+
+    private static IOrderedEnumerable<TemporalSplit> RankTemporalCandidates(IEnumerable<TemporalSplit> candidates)
+    {
+        return candidates
+            .OrderByDescending(x => x.TestHasBothClasses)
+            .ThenByDescending(x => x.WindowSize)
+            .ThenBy(x => x.DistanceToPreferred)
+            .ThenByDescending(x => x.StartIndex);
     }
 
     private static List<ModelInput> RebalanceTrainingRows(IReadOnlyList<ModelInput> rows)
