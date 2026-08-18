@@ -986,6 +986,15 @@ public sealed class EarthquakeIngestionWorker(
         var items = new List<ClimateDailyObservation>();
         foreach (var location in climateLocations)
         {
+            var latestStoredDate = await dbContext.ClimateDailyObservations
+                .AsNoTracking()
+                .Where(x => x.LocationLabel == location.Label)
+                .MaxAsync(x => (DateOnly?)x.ObservationDate, cancellationToken);
+            var queryStartDate = latestStoredDate is null
+                ? DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(-Math.Max(7, options.Value.Climate.HistoryDays)))
+                : latestStoredDate.Value;
+            var queryEndDate = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+
             var locationOptions = new ClimateIngestionOptions
             {
                 Enabled = options.Value.Climate.Enabled,
@@ -1000,7 +1009,11 @@ public sealed class EarthquakeIngestionWorker(
 
             try
             {
-                items.AddRange(await climateDataSource.GetDailyObservationsAsync(locationOptions, cancellationToken));
+                items.AddRange(await climateDataSource.GetDailyObservationsAsync(
+                    locationOptions,
+                    queryStartDate,
+                    queryEndDate,
+                    cancellationToken));
             }
             catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.TooManyRequests)
             {
@@ -1092,9 +1105,19 @@ public sealed class EarthquakeIngestionWorker(
         var items = new List<GeomagneticObservation>();
         foreach (var observatory in observatories)
         {
+            var latestObservedAtUtc = await dbContext.GeomagneticObservations
+                .AsNoTracking()
+                .Where(x => x.ObservatoryCode == observatory.Code)
+                .MaxAsync(x => (DateTimeOffset?)x.ObservedAtUtc, cancellationToken);
+            var queryStartUtc = latestObservedAtUtc?.AddSeconds(-Math.Max(1, options.Value.Geomagnetic.SamplingPeriodSeconds))
+                ?? DateTimeOffset.UtcNow.AddDays(-Math.Max(1, options.Value.Geomagnetic.HistoryDays));
+            var queryEndUtc = DateTimeOffset.UtcNow;
+
             items.AddRange(await geomagnetismDataSource.GetObservationsAsync(
                 observatory,
                 options.Value.Geomagnetic,
+                queryStartUtc,
+                queryEndUtc,
                 cancellationToken));
         }
 
@@ -1169,13 +1192,20 @@ public sealed class OpenMeteoClimateDataSource(HttpClient httpClient)
 
     public async Task<IReadOnlyList<ClimateDailyObservation>> GetDailyObservationsAsync(
         ClimateIngestionOptions options,
+        DateOnly? startDateOverride,
+        DateOnly? endDateOverride,
         CancellationToken cancellationToken)
     {
         var latitude = double.Parse(options.Latitude, CultureInfo.InvariantCulture);
         var longitude = double.Parse(options.Longitude, CultureInfo.InvariantCulture);
-        var startDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(-Math.Max(7, options.HistoryDays)));
-        var endDate = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-            var url = $"v1/climate?latitude={options.Latitude}&longitude={options.Longitude}&start_date={startDate:yyyy-MM-dd}&end_date={endDate:yyyy-MM-dd}&models={Uri.EscapeDataString(options.Models)}&daily={Uri.EscapeDataString(DailyVariables)}&timezone=GMT";
+        var startDate = startDateOverride ?? DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(-Math.Max(7, options.HistoryDays)));
+        var endDate = endDateOverride ?? DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        if (startDate > endDate)
+        {
+            return [];
+        }
+
+        var url = $"v1/climate?latitude={options.Latitude}&longitude={options.Longitude}&start_date={startDate:yyyy-MM-dd}&end_date={endDate:yyyy-MM-dd}&models={Uri.EscapeDataString(options.Models)}&daily={Uri.EscapeDataString(DailyVariables)}&timezone=GMT";
         using var response = await httpClient.GetAsync(url, cancellationToken);
         if (response.StatusCode == HttpStatusCode.NoContent)
         {
@@ -1315,10 +1345,15 @@ public sealed class UsgsGeomagnetismDataSource(HttpClient httpClient)
     public async Task<IReadOnlyList<GeomagneticObservation>> GetObservationsAsync(
         GeomagneticObservatoryOption observatory,
         GeomagneticIngestionOptions options,
+        DateTimeOffset startTimeUtc,
+        DateTimeOffset endTimeUtc,
         CancellationToken cancellationToken)
     {
-        var endTimeUtc = DateTimeOffset.UtcNow;
-        var startTimeUtc = endTimeUtc.AddDays(-Math.Max(1, options.HistoryDays));
+        if (startTimeUtc >= endTimeUtc)
+        {
+            return [];
+        }
+
         var query = $"data/?id={Uri.EscapeDataString(observatory.Code)}" +
                     $"&format=json" +
                     $"&sampling_period={options.SamplingPeriodSeconds}" +
