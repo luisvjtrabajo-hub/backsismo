@@ -600,12 +600,25 @@ public sealed class DashboardService(
             .GroupBy(x => DateOnly.FromDateTime(x.ObservedAtUtc.UtcDateTime.Date))
             .ToDictionary(group => group.Key, group => group.ToList());
 
-        var allDates = climateByDate.Keys
+        var availableDates = climateByDate.Keys
             .Concat(earthquakeByDate.Keys)
             .Concat(geomagneticByDate.Keys)
             .Distinct()
             .OrderBy(x => x)
             .ToList();
+
+        if (availableDates.Count == 0)
+        {
+            return [];
+        }
+
+        var startDate = availableDates[0];
+        var endDate = availableDates[^1];
+        var allDates = new List<DateOnly>();
+        for (var cursor = startDate; cursor <= endDate; cursor = cursor.AddDays(1))
+        {
+            allDates.Add(cursor);
+        }
 
         var result = new List<CountryDailyFeatureDto>(allDates.Count);
         foreach (var date in allDates)
