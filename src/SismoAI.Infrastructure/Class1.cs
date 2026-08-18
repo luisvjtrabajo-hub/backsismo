@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Xml.Linq;
@@ -394,6 +395,8 @@ public sealed class DashboardService(
                 latestSnapshot.Level,
                 latestSnapshot.Summary,
                 JsonSerializer.Deserialize<List<string>>(latestSnapshot.DriversJson) ?? []);
+        var peruRecent = recent.Where(IsPeruEvent).ToList();
+        var peruAnalytics = analyticsEngine.Analyze(peruRecent.Take(50).ToList());
 
         return new DashboardSnapshotDto(
             latestEvents,
@@ -409,6 +412,10 @@ public sealed class DashboardService(
             analytics.AnomalyScore,
             analytics.Level,
             analytics.Summary,
+            peruAnalytics.AnomalyScore,
+            peruAnalytics.Level,
+            peruAnalytics.Summary,
+            peruAnalytics.Drivers,
             now);
     }
 
@@ -429,6 +436,133 @@ public sealed class DashboardService(
                 Math.Round(group.Average(x => x.Latitude), 4),
                 Math.Round(group.Average(x => x.Longitude), 4)))
             .ToList();
+    }
+
+    private static bool IsPeruEvent(EarthquakeEvent earthquakeEvent)
+    {
+        if (string.Equals(earthquakeEvent.Source, "IGP", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (earthquakeEvent.Latitude >= -18.6
+            && earthquakeEvent.Latitude <= 0.8
+            && earthquakeEvent.Longitude >= -81.6
+            && earthquakeEvent.Longitude <= -68.2)
+        {
+            return true;
+        }
+
+        var location = NormalizeForKeywordMatch(earthquakeEvent.LocationDescription);
+        if (HasKeywordPhrase(location, ["perú", "peru"]))
+        {
+            return true;
+        }
+
+        if (HasKeywordPhrase(location, [
+            "chile",
+            "ecuador",
+            "colombia",
+            "bolivia",
+            "brasil",
+            "brazil",
+            "argentina",
+            "venezuela",
+            "jamaica",
+            "costa rica",
+            "mexico",
+            "méxico",
+            "guatemala",
+            "nicaragua",
+            "panama",
+            "panamá",
+            "el salvador",
+            "puerto rico",
+            "united states",
+            "usa",
+            "canada",
+            "canadá"
+        ]))
+        {
+            return false;
+        }
+
+        var isNearPeruBounds = earthquakeEvent.Latitude >= -21
+            && earthquakeEvent.Latitude <= 2
+            && earthquakeEvent.Longitude >= -84
+            && earthquakeEvent.Longitude <= -66;
+
+        return isNearPeruBounds && HasKeywordPhrase(location, [
+            "lima",
+            "ica",
+            "arequipa",
+            "ancash",
+            "áncash",
+            "huari",
+            "cañete",
+            "nasca",
+            "piura",
+            "trujillo",
+            "cusco",
+            "cuzco",
+            "tacna",
+            "moquegua",
+            "puno",
+            "ayacucho",
+            "apurímac",
+            "apurimac",
+            "junín",
+            "junin",
+            "amazonas",
+            "san martín",
+            "san martin",
+            "ucayali",
+            "madre de dios",
+            "huánuco",
+            "huanuco",
+            "pasco",
+            "chiclayo",
+            "chimbote",
+            "callao",
+            "cajamarca",
+            "huancayo",
+            "pucallpa",
+            "tarapoto"
+        ]);
+    }
+
+    private static string NormalizeForKeywordMatch(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return " ";
+        }
+
+        var normalized = value
+            .Normalize(NormalizationForm.FormD)
+            .Where(ch => CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark)
+            .ToArray();
+
+        var text = new string(normalized)
+            .ToLowerInvariant();
+        var cleaned = new string(text.Select(ch => char.IsLetter(ch) ? ch : ' ').ToArray());
+        var compact = string.Join(' ', cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+        return string.IsNullOrWhiteSpace(compact) ? " " : $" {compact} ";
+    }
+
+    private static bool HasKeywordPhrase(string normalizedText, IReadOnlyList<string> phrases)
+    {
+        foreach (var phrase in phrases)
+        {
+            var normalizedPhrase = NormalizeForKeywordMatch(phrase).Trim();
+            if (!string.IsNullOrWhiteSpace(normalizedPhrase) && normalizedText.Contains($" {normalizedPhrase} ", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 

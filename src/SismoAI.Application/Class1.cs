@@ -66,6 +66,10 @@ public sealed record DashboardSnapshotDto(
     double CurrentAnomalyScore,
     string CurrentAnomalyLevel,
     string CurrentSummary,
+    double CurrentPeruAnomalyScore,
+    string CurrentPeruAnomalyLevel,
+    string CurrentPeruSummary,
+    IReadOnlyList<string> PeruTopDrivers,
     DateTimeOffset GeneratedAtUtc);
 
 public sealed record AnalyticsResult(
