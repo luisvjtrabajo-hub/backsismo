@@ -93,6 +93,12 @@ public sealed record CountryDailyFeatureDto(
     double? WindSpeed10mMean,
     double? SoilMoisture0To10cmMean,
     double? ShortwaveRadiationSum,
+    int GeomagneticSampleCount,
+    double? GeomagneticRangeX,
+    double? GeomagneticRangeY,
+    double? GeomagneticRangeZ,
+    double? GeomagneticRangeF,
+    double? GeomagneticMeanAbsDeltaF,
     int NextDayEarthquakeCount,
     bool NextDayHadSignificantEarthquake);
 
@@ -135,12 +141,14 @@ public sealed class IngestionOptions
     public int HistoricalBackfillDays { get; set; } = 365;
     public int RecentEventCount { get; set; } = 100;
     public ClimateIngestionOptions Climate { get; set; } = new();
+    public GeomagneticIngestionOptions Geomagnetic { get; set; } = new();
 }
 
 public sealed class ClimateIngestionOptions
 {
     public bool Enabled { get; set; } = true;
     public int HistoryDays { get; set; } = 365;
+    public int RefreshIntervalMinutes { get; set; } = 180;
     public string Latitude { get; set; } = "-9.19";
     public string Longitude { get; set; } = "-75.015";
     public string LocationLabel { get; set; } = "Perú";
@@ -153,6 +161,26 @@ public sealed class ClimateLocationOption
     public string Label { get; set; } = string.Empty;
     public string Latitude { get; set; } = string.Empty;
     public string Longitude { get; set; } = string.Empty;
+}
+
+public sealed class GeomagneticIngestionOptions
+{
+    public bool Enabled { get; set; }
+    public int HistoryDays { get; set; } = 30;
+    public int SamplingPeriodSeconds { get; set; } = 60;
+    public string DataType { get; set; } = "variation";
+    public List<GeomagneticObservatoryOption> Observatories { get; set; } = [];
+}
+
+public sealed class GeomagneticObservatoryOption
+{
+    public string Code { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string CountryCode { get; set; } = string.Empty;
+    public string CountryName { get; set; } = string.Empty;
+    public double Latitude { get; set; }
+    public double Longitude { get; set; }
+    public string Elements { get; set; } = string.Empty;
 }
 
 public interface IEarthquakeDataSource

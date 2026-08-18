@@ -148,6 +148,12 @@ public static class DependencyInjection
             client.Timeout = TimeSpan.FromSeconds(45);
         });
 
+        services.AddHttpClient<UsgsGeomagnetismDataSource>(client =>
+        {
+            client.BaseAddress = new Uri("https://geomag.usgs.gov/ws/");
+            client.Timeout = TimeSpan.FromSeconds(90);
+        });
+
         services.AddScoped<IEarthquakeDataSource, UsgsDataSource>();
         services.AddScoped<IEarthquakeDataSource, IgpDataSource>();
         services.AddScoped<IEarthquakeDataSource, IscDataSource>();
@@ -557,6 +563,12 @@ public sealed class DashboardService(
                 && x.ObservationDate >= DateOnly.FromDateTime(sinceUtc.UtcDateTime.Date))
             .OrderBy(x => x.ObservationDate)
             .ToListAsync(cancellationToken);
+        var geomagnetic = await dbContext.GeomagneticObservations
+            .AsNoTracking()
+            .Where(x => x.CountryCode == country.Code
+                && x.ObservedAtUtc >= sinceUtc)
+            .OrderBy(x => x.ObservedAtUtc)
+            .ToListAsync(cancellationToken);
 
         var climateByDate = climate
             .GroupBy(x => x.ObservationDate)
@@ -570,9 +582,13 @@ public sealed class DashboardService(
         var earthquakeByDate = earthquakes
             .GroupBy(x => DateOnly.FromDateTime(x.OriginTimeUtc.UtcDateTime.Date))
             .ToDictionary(group => group.Key, group => group.ToList());
+        var geomagneticByDate = geomagnetic
+            .GroupBy(x => DateOnly.FromDateTime(x.ObservedAtUtc.UtcDateTime.Date))
+            .ToDictionary(group => group.Key, group => group.ToList());
 
         var allDates = climateByDate.Keys
             .Concat(earthquakeByDate.Keys)
+            .Concat(geomagneticByDate.Keys)
             .Distinct()
             .OrderBy(x => x)
             .ToList();
@@ -582,7 +598,9 @@ public sealed class DashboardService(
         {
             earthquakeByDate.TryGetValue(date, out var dayEarthquakes);
             climateByDate.TryGetValue(date, out var dayClimate);
+                geomagneticByDate.TryGetValue(date, out var dayGeomagnetic);
             var events = dayEarthquakes ?? [];
+                var geomagneticItems = dayGeomagnetic ?? [];
             var nextDate = date.AddDays(1);
             earthquakeByDate.TryGetValue(nextDate, out var nextDayEarthquakes);
             var nextEvents = nextDayEarthquakes ?? [];
@@ -606,6 +624,12 @@ public sealed class DashboardService(
                 dayClimate?.WindSpeed10mMean,
                 dayClimate?.SoilMoisture0To10cmMean,
                 dayClimate?.ShortwaveRadiationSum,
+                    geomagneticItems.Count,
+                    ComputeRange(geomagneticItems.Select(x => x.X)),
+                    ComputeRange(geomagneticItems.Select(x => x.Y)),
+                    ComputeRange(geomagneticItems.Select(x => x.Z)),
+                    ComputeRange(geomagneticItems.Select(x => x.F)),
+                    ComputeMeanAbsoluteDelta(geomagneticItems.Select(x => x.F)),
                 nextEvents.Count,
                 nextEvents.Any(x => x.Magnitude >= 4.5)));
         }
@@ -614,6 +638,42 @@ public sealed class DashboardService(
             .OrderByDescending(x => x.Date)
             .ToList();
     }
+
+        private static double? ComputeRange(IEnumerable<double?> values)
+        {
+            var materialized = values
+                .Where(x => x.HasValue)
+                .Select(x => x!.Value)
+                .ToList();
+
+            if (materialized.Count < 2)
+            {
+                return null;
+            }
+
+            return Math.Round(materialized.Max() - materialized.Min(), 6);
+        }
+
+        private static double? ComputeMeanAbsoluteDelta(IEnumerable<double?> values)
+        {
+            var materialized = values
+                .Where(x => x.HasValue)
+                .Select(x => x!.Value)
+                .ToList();
+
+            if (materialized.Count < 2)
+            {
+                return null;
+            }
+
+            var deltas = new List<double>(materialized.Count - 1);
+            for (var index = 1; index < materialized.Count; index++)
+            {
+                deltas.Add(Math.Abs(materialized[index] - materialized[index - 1]));
+            }
+
+            return deltas.Count == 0 ? null : Math.Round(deltas.Average(), 6);
+        }
 
     private static IReadOnlyList<ClusterDto> BuildGeoClusters(IReadOnlyList<EarthquakeEvent> events, double bucketSize, string prefix)
     {
@@ -735,7 +795,8 @@ public sealed class EarthquakeIngestionWorker(
         var monitoringRepository = scope.ServiceProvider.GetRequiredService<IMonitoringRepository>();
         var dashboardService = scope.ServiceProvider.GetRequiredService<IDashboardService>();
         var dataSources = scope.ServiceProvider.GetRequiredService<IEnumerable<IEarthquakeDataSource>>();
-        var climateDataSource = scope.ServiceProvider.GetRequiredService<OpenMeteoClimateDataSource>();
+            var climateDataSource = scope.ServiceProvider.GetRequiredService<OpenMeteoClimateDataSource>();
+            var geomagnetismDataSource = scope.ServiceProvider.GetRequiredService<UsgsGeomagnetismDataSource>();
         var activeSourceNames = dataSources.Select(x => x.Name).ToArray();
 
             var latestBySource = await earthquakeRepository.GetLatestOriginBySourceAsync(cancellationToken);
@@ -841,6 +902,11 @@ public sealed class EarthquakeIngestionWorker(
             await IngestClimateAsync(scope.ServiceProvider.GetRequiredService<SismoDbContext>(), climateDataSource, cancellationToken);
         }
 
+            if (options.Value.Geomagnetic.Enabled)
+            {
+                await IngestGeomagneticAsync(scope.ServiceProvider.GetRequiredService<SismoDbContext>(), geomagnetismDataSource, cancellationToken);
+            }
+
         var recent = await earthquakeRepository.GetRecentAsync(options.Value.RecentEventCount, cancellationToken);
         var analytics = analyticsEngine.Analyze(recent);
 
@@ -893,29 +959,58 @@ public sealed class EarthquakeIngestionWorker(
 
     private async Task IngestClimateAsync(SismoDbContext dbContext, OpenMeteoClimateDataSource climateDataSource, CancellationToken cancellationToken)
     {
-            var climateLocations = options.Value.Climate.Locations.Count > 0
-                ? options.Value.Climate.Locations
-                : [new ClimateLocationOption
-                    {
-                        Label = options.Value.Climate.LocationLabel,
-                        Latitude = options.Value.Climate.Latitude,
-                        Longitude = options.Value.Climate.Longitude
-                    }];
-            var items = new List<ClimateDailyObservation>();
-            foreach (var location in climateLocations)
-            {
-                var locationOptions = new ClimateIngestionOptions
+        var refreshIntervalMinutes = Math.Max(15, options.Value.Climate.RefreshIntervalMinutes);
+        var refreshThresholdUtc = DateTimeOffset.UtcNow.AddMinutes(-refreshIntervalMinutes);
+        var latestClimateSyncUtc = await dbContext.ClimateDailyObservations
+            .AsNoTracking()
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .Select(x => (DateTimeOffset?)x.UpdatedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (latestClimateSyncUtc is not null && latestClimateSyncUtc >= refreshThresholdUtc)
+        {
+            logger.LogInformation(
+                "Fuente OpenMeteoClimate: se omite consulta porque la última sincronización fue hace menos de {RefreshIntervalMinutes} minutos.",
+                refreshIntervalMinutes);
+            return;
+        }
+
+        var climateLocations = options.Value.Climate.Locations.Count > 0
+            ? options.Value.Climate.Locations
+            : [new ClimateLocationOption
                 {
-                    Enabled = options.Value.Climate.Enabled,
-                    HistoryDays = options.Value.Climate.HistoryDays,
-                    Latitude = location.Latitude,
-                    Longitude = location.Longitude,
-                    LocationLabel = location.Label,
-                    Models = options.Value.Climate.Models,
-                    Locations = []
-                };
+                    Label = options.Value.Climate.LocationLabel,
+                    Latitude = options.Value.Climate.Latitude,
+                    Longitude = options.Value.Climate.Longitude
+                }];
+        var items = new List<ClimateDailyObservation>();
+        foreach (var location in climateLocations)
+        {
+            var locationOptions = new ClimateIngestionOptions
+            {
+                Enabled = options.Value.Climate.Enabled,
+                HistoryDays = options.Value.Climate.HistoryDays,
+                RefreshIntervalMinutes = options.Value.Climate.RefreshIntervalMinutes,
+                Latitude = location.Latitude,
+                Longitude = location.Longitude,
+                LocationLabel = location.Label,
+                Models = options.Value.Climate.Models,
+                Locations = []
+            };
+
+            try
+            {
                 items.AddRange(await climateDataSource.GetDailyObservationsAsync(locationOptions, cancellationToken));
             }
+            catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Fuente OpenMeteoClimate: límite de consultas alcanzado para {LocationLabel}. Se reintentará en un ciclo posterior.",
+                    location.Label);
+            }
+        }
+
         if (items.Count == 0)
         {
             logger.LogInformation("Fuente OpenMeteoClimate: sin observaciones nuevas en el ciclo actual.");
@@ -978,6 +1073,90 @@ public sealed class EarthquakeIngestionWorker(
         await dbContext.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Fuente OpenMeteoClimate: {Inserted} insertados, {Updated} actualizados.",
+            inserted,
+            updated);
+    }
+
+    private async Task IngestGeomagneticAsync(
+        SismoDbContext dbContext,
+        UsgsGeomagnetismDataSource geomagnetismDataSource,
+        CancellationToken cancellationToken)
+    {
+        var observatories = options.Value.Geomagnetic.Observatories;
+        if (observatories.Count == 0)
+        {
+            logger.LogInformation("Fuente UsgsGeomagnetism: sin observatorios configurados.");
+            return;
+        }
+
+        var items = new List<GeomagneticObservation>();
+        foreach (var observatory in observatories)
+        {
+            items.AddRange(await geomagnetismDataSource.GetObservationsAsync(
+                observatory,
+                options.Value.Geomagnetic,
+                cancellationToken));
+        }
+
+        if (items.Count == 0)
+        {
+            logger.LogInformation("Fuente UsgsGeomagnetism: sin observaciones nuevas en el ciclo actual.");
+            return;
+        }
+
+        var minObservedAt = items.Min(x => x.ObservedAtUtc);
+        var maxObservedAt = items.Max(x => x.ObservedAtUtc);
+        var observatoryCodes = items.Select(x => x.ObservatoryCode).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        var existing = await dbContext.GeomagneticObservations
+            .Where(x => x.ObservedAtUtc >= minObservedAt
+                && x.ObservedAtUtc <= maxObservedAt
+                && observatoryCodes.Contains(x.ObservatoryCode))
+            .ToListAsync(cancellationToken);
+
+        var existingLookup = existing.ToDictionary(
+            x => $"{x.ObservatoryCode}|{x.ObservedAtUtc:O}|{x.SamplingPeriodSeconds}|{x.DataType}",
+            StringComparer.OrdinalIgnoreCase);
+
+        var inserted = 0;
+        var updated = 0;
+        foreach (var item in items)
+        {
+            var key = $"{item.ObservatoryCode}|{item.ObservedAtUtc:O}|{item.SamplingPeriodSeconds}|{item.DataType}";
+            if (!existingLookup.TryGetValue(key, out var current))
+            {
+                await dbContext.GeomagneticObservations.AddAsync(item, cancellationToken);
+                existingLookup[key] = item;
+                inserted++;
+                continue;
+            }
+
+            current.Provider = item.Provider;
+            current.ObservatoryName = item.ObservatoryName;
+            current.CountryCode = item.CountryCode;
+            current.CountryName = item.CountryName;
+            current.Latitude = item.Latitude;
+            current.Longitude = item.Longitude;
+            current.SourceFormat = item.SourceFormat;
+            current.X = item.X;
+            current.Y = item.Y;
+            current.Z = item.Z;
+            current.F = item.F;
+            current.H = item.H;
+            current.D = item.D;
+            current.G = item.G;
+            current.Dst = item.Dst;
+            current.Dist = item.Dist;
+            current.Sq = item.Sq;
+            current.Sv = item.Sv;
+            current.RawPayload = item.RawPayload;
+            current.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            updated++;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Fuente UsgsGeomagnetism: {Inserted} insertados, {Updated} actualizados.",
             inserted,
             updated);
     }
@@ -1129,6 +1308,148 @@ public sealed class OpenMeteoClimateDataSource(HttpClient httpClient)
                     : null;
         }
     }
+}
+
+public sealed class UsgsGeomagnetismDataSource(HttpClient httpClient)
+{
+    public async Task<IReadOnlyList<GeomagneticObservation>> GetObservationsAsync(
+        GeomagneticObservatoryOption observatory,
+        GeomagneticIngestionOptions options,
+        CancellationToken cancellationToken)
+    {
+        var endTimeUtc = DateTimeOffset.UtcNow;
+        var startTimeUtc = endTimeUtc.AddDays(-Math.Max(1, options.HistoryDays));
+        var query = $"data/?id={Uri.EscapeDataString(observatory.Code)}" +
+                    $"&format=json" +
+                    $"&sampling_period={options.SamplingPeriodSeconds}" +
+                    $"&type={Uri.EscapeDataString(options.DataType)}" +
+                    $"&starttime={Uri.EscapeDataString(startTimeUtc.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture))}" +
+                    $"&endtime={Uri.EscapeDataString(endTimeUtc.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture))}";
+
+        if (!string.IsNullOrWhiteSpace(observatory.Elements))
+        {
+            query += $"&elements={Uri.EscapeDataString(observatory.Elements)}";
+        }
+
+        using var response = await httpClient.GetAsync(query, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NoContent)
+        {
+            return [];
+        }
+
+        response.EnsureSuccessStatusCode();
+        var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return [];
+        }
+
+        var document = JsonSerializer.Deserialize<UsgsGeomagnetismResponse>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new UsgsGeomagnetismResponse();
+        if (document.Times.Count == 0 || document.Values.Count == 0)
+        {
+            return [];
+        }
+
+        var result = new List<GeomagneticObservation>(document.Times.Count);
+        for (var index = 0; index < document.Times.Count; index++)
+        {
+            if (!DateTimeOffset.TryParse(document.Times[index], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var observedAtUtc))
+            {
+                continue;
+            }
+
+            var x = ReadGeomagneticValue(document.Values, "X", index);
+            var y = ReadGeomagneticValue(document.Values, "Y", index);
+            var z = ReadGeomagneticValue(document.Values, "Z", index);
+            var f = ReadGeomagneticValue(document.Values, "F", index);
+            var h = ReadGeomagneticValue(document.Values, "H", index);
+            var d = ReadGeomagneticValue(document.Values, "D", index);
+            var g = ReadGeomagneticValue(document.Values, "G", index);
+            var dst = ReadGeomagneticValue(document.Values, "DST", index);
+            var dist = ReadGeomagneticValue(document.Values, "DIST", index);
+            var sq = ReadGeomagneticValue(document.Values, "SQ", index);
+            var sv = ReadGeomagneticValue(document.Values, "SV", index);
+
+            if (x is null && y is null && z is null && f is null && h is null && d is null && g is null && dst is null && dist is null && sq is null && sv is null)
+            {
+                continue;
+            }
+
+            result.Add(new GeomagneticObservation
+            {
+                Provider = "USGS",
+                ObservatoryCode = observatory.Code,
+                ObservatoryName = string.IsNullOrWhiteSpace(observatory.Name) ? observatory.Code : observatory.Name,
+                CountryCode = observatory.CountryCode,
+                CountryName = observatory.CountryName,
+                Latitude = observatory.Latitude,
+                Longitude = observatory.Longitude,
+                ObservedAtUtc = observedAtUtc,
+                SamplingPeriodSeconds = options.SamplingPeriodSeconds,
+                DataType = options.DataType,
+                SourceFormat = "json",
+                X = x,
+                Y = y,
+                Z = z,
+                F = f,
+                H = h,
+                D = d,
+                G = g,
+                Dst = dst,
+                Dist = dist,
+                Sq = sq,
+                Sv = sv,
+                RawPayload = JsonSerializer.Serialize(new
+                {
+                    observatory = observatory.Code,
+                    observedAtUtc,
+                    x,
+                    y,
+                    z,
+                    f,
+                    h,
+                    d,
+                    g,
+                    dst,
+                    dist,
+                    sq,
+                    sv
+                })
+            });
+        }
+
+        return result;
+    }
+
+    private static double? ReadGeomagneticValue(IReadOnlyList<UsgsGeomagnetismSeries> values, string id, int index)
+    {
+        var series = values.FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase));
+        if (series is null || index < 0 || index >= series.NumericValues.Count)
+        {
+            return null;
+        }
+
+        return series.NumericValues[index];
+    }
+}
+
+public sealed class UsgsGeomagnetismResponse
+{
+    [JsonPropertyName("times")]
+    public List<string> Times { get; set; } = [];
+
+    [JsonPropertyName("values")]
+    public List<UsgsGeomagnetismSeries> Values { get; set; } = [];
+}
+
+public sealed class UsgsGeomagnetismSeries
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("values")]
+    public List<double?> NumericValues { get; set; } = [];
 }
 
 public sealed class UsgsDataSource(HttpClient httpClient) : IEarthquakeDataSource

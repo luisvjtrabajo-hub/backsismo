@@ -20,7 +20,13 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         nameof(ModelInput.RelativeHumidity2mMean),
         nameof(ModelInput.WindSpeed10mMean),
         nameof(ModelInput.SoilMoisture0To10cmMean),
-        nameof(ModelInput.ShortwaveRadiationSum)
+        nameof(ModelInput.ShortwaveRadiationSum),
+        nameof(ModelInput.GeomagneticSampleCount),
+        nameof(ModelInput.GeomagneticRangeX),
+        nameof(ModelInput.GeomagneticRangeY),
+        nameof(ModelInput.GeomagneticRangeZ),
+        nameof(ModelInput.GeomagneticRangeF),
+        nameof(ModelInput.GeomagneticMeanAbsDeltaF)
     ];
 
     public Task<CountryBaselineClassificationDto> BuildCountryBaselineAsync(
@@ -49,6 +55,12 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
                 WindSpeed10mMean = (float)(x.WindSpeed10mMean ?? 0),
                 SoilMoisture0To10cmMean = (float)(x.SoilMoisture0To10cmMean ?? 0),
                 ShortwaveRadiationSum = (float)(x.ShortwaveRadiationSum ?? 0),
+                GeomagneticSampleCount = x.GeomagneticSampleCount,
+                GeomagneticRangeX = (float)(x.GeomagneticRangeX ?? 0),
+                GeomagneticRangeY = (float)(x.GeomagneticRangeY ?? 0),
+                GeomagneticRangeZ = (float)(x.GeomagneticRangeZ ?? 0),
+                GeomagneticRangeF = (float)(x.GeomagneticRangeF ?? 0),
+                GeomagneticMeanAbsDeltaF = (float)(x.GeomagneticMeanAbsDeltaF ?? 0),
                 Label = x.NextDayHadSignificantEarthquake
             })
             .ToList();
@@ -245,6 +257,12 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
             nameof(ModelInput.WindSpeed10mMean) => input.WindSpeed10mMean,
             nameof(ModelInput.SoilMoisture0To10cmMean) => input.SoilMoisture0To10cmMean,
             nameof(ModelInput.ShortwaveRadiationSum) => input.ShortwaveRadiationSum,
+            nameof(ModelInput.GeomagneticSampleCount) => input.GeomagneticSampleCount,
+            nameof(ModelInput.GeomagneticRangeX) => input.GeomagneticRangeX,
+            nameof(ModelInput.GeomagneticRangeY) => input.GeomagneticRangeY,
+            nameof(ModelInput.GeomagneticRangeZ) => input.GeomagneticRangeZ,
+            nameof(ModelInput.GeomagneticRangeF) => input.GeomagneticRangeF,
+            nameof(ModelInput.GeomagneticMeanAbsDeltaF) => input.GeomagneticMeanAbsDeltaF,
             _ => 0
         };
     }
@@ -266,6 +284,12 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
             nameof(ModelInput.WindSpeed10mMean) => "Viento medio",
             nameof(ModelInput.SoilMoisture0To10cmMean) => "Humedad de suelo",
             nameof(ModelInput.ShortwaveRadiationSum) => "Radiación solar",
+            nameof(ModelInput.GeomagneticSampleCount) => "Muestras geomagnéticas",
+            nameof(ModelInput.GeomagneticRangeX) => "Rango geomagnético X",
+            nameof(ModelInput.GeomagneticRangeY) => "Rango geomagnético Y",
+            nameof(ModelInput.GeomagneticRangeZ) => "Rango geomagnético Z",
+            nameof(ModelInput.GeomagneticRangeF) => "Rango geomagnético F",
+            nameof(ModelInput.GeomagneticMeanAbsDeltaF) => "Variación media absoluta geomagnética F",
             _ => value
         };
     }
@@ -286,6 +310,12 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         public float WindSpeed10mMean { get; set; }
         public float SoilMoisture0To10cmMean { get; set; }
         public float ShortwaveRadiationSum { get; set; }
+        public float GeomagneticSampleCount { get; set; }
+        public float GeomagneticRangeX { get; set; }
+        public float GeomagneticRangeY { get; set; }
+        public float GeomagneticRangeZ { get; set; }
+        public float GeomagneticRangeF { get; set; }
+        public float GeomagneticMeanAbsDeltaF { get; set; }
         public bool Label { get; set; }
     }
 
