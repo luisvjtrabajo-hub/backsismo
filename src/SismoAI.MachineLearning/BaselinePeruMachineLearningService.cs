@@ -75,9 +75,10 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         var splitIndex = Math.Clamp((int)Math.Floor(usable.Count * 0.8), 40, usable.Count - 10);
         var trainRows = usable.Take(splitIndex).ToList();
         var testRows = usable.Skip(splitIndex).ToList();
+            var trainHasBothClasses = HasBothClasses(trainRows);
+            var testHasBothClasses = HasBothClasses(testRows);
         var mlContext = new MLContext(seed: 42);
         var trainData = mlContext.Data.LoadFromEnumerable(trainRows);
-        var testData = mlContext.Data.LoadFromEnumerable(testRows);
 
         var pipeline = mlContext.Transforms.Concatenate("Features", FeatureColumns)
             .Append(mlContext.Transforms.NormalizeMinMax("Features"))
@@ -86,22 +87,49 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
                 featureColumnName: "Features"));
 
         var model = pipeline.Fit(trainData);
-        var predictions = model.Transform(testData);
-        var metrics = mlContext.BinaryClassification.Evaluate(
-            predictions,
-            labelColumnName: nameof(ModelInput.Label));
-
         var latestInput = mlContext.Data.LoadFromEnumerable([usable[^1]]);
         var latestPrediction = model.Transform(latestInput);
         var latestScored = mlContext.Data.CreateEnumerable<ModelPrediction>(latestPrediction, reuseRowObject: false).First();
-
         var influences = BuildFeatureInfluences(trainRows)
             .OrderByDescending(x => Math.Abs(x.Weight))
             .ToList();
 
         var topPositive = influences.Where(x => x.Weight > 0).Take(4).ToList();
         var topNegative = influences.Where(x => x.Weight < 0).Take(4).ToList();
-        var summary = BuildSummary(metrics, latestScored.Probability, latestScored.PredictedLabel, usable.Count);
+            if (!trainHasBothClasses || !testHasBothClasses)
+            {
+                return Task.FromResult(new PeruBaselineClassificationDto(
+                    false,
+                    "SDCA Logistic Regression",
+                    BuildInsufficientClassSummary(
+                        latestScored.Probability,
+                        latestScored.PredictedLabel,
+                        usable.Count,
+                        trainRows.Count,
+                        testRows.Count,
+                        trainHasBothClasses,
+                        testHasBothClasses),
+                    usable.Count,
+                    trainRows.Count,
+                    testRows.Count,
+                    Math.Round(usable.Count(x => x.Label) / (double)usable.Count, 4),
+                    0,
+                    0,
+                    0,
+                    0,
+                    Math.Round(latestScored.Probability, 4),
+                    latestScored.PredictedLabel,
+                    DateOnly.FromDateTime(usable[^1].Date),
+                    topPositive,
+                    topNegative));
+            }
+
+            var testData = mlContext.Data.LoadFromEnumerable(testRows);
+            var predictions = model.Transform(testData);
+            var metrics = mlContext.BinaryClassification.Evaluate(
+                predictions,
+                labelColumnName: nameof(ModelInput.Label));
+            var summary = BuildSummary(metrics, latestScored.Probability, latestScored.PredictedLabel, usable.Count);
 
         return Task.FromResult(new PeruBaselineClassificationDto(
             true,
@@ -138,6 +166,32 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         return $"Baseline Perú entrenado con {sampleCount} días. " +
                $"En prueba logró accuracy {metrics.Accuracy:P1} y F1 {metrics.F1Score:P1}. " +
                $"Para el último día observado estima {tendency} de sismo significativo al día siguiente ({probability:P1}).";
+    }
+
+    private static string BuildInsufficientClassSummary(
+        float probability,
+        bool predictedLabel,
+        int sampleCount,
+        int trainCount,
+        int testCount,
+        bool trainHasBothClasses,
+        bool testHasBothClasses)
+    {
+        var tendency = predictedLabel ? "probabilidad elevada" : "probabilidad baja";
+        var missingPartition = !trainHasBothClasses && !testHasBothClasses
+            ? "entrenamiento y prueba"
+            : !trainHasBothClasses
+                ? "entrenamiento"
+                : "prueba";
+
+        return $"Baseline Perú entrenado con {sampleCount} días, pero la partición de {missingPartition} no tuvo ambas clases " +
+               $"({trainCount} entrenamiento, {testCount} prueba), así que no se calcularon métricas AUC/F1 confiables. " +
+               $"Para el último día observado estima {tendency} de sismo significativo al día siguiente ({probability:P1}).";
+    }
+
+    private static bool HasBothClasses(IReadOnlyList<ModelInput> rows)
+    {
+        return rows.Any(x => x.Label) && rows.Any(x => !x.Label);
     }
 
     private static IReadOnlyList<FeatureInfluenceDto> BuildFeatureInfluences(IReadOnlyList<ModelInput> rows)
