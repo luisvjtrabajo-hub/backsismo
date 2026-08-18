@@ -84,6 +84,10 @@ public sealed record CountryDailyFeatureDto(
     double MeanMagnitude,
     double MeanDepthKm,
     double TotalEnergyJoules,
+    int EarthquakeCount1d,
+    int SignificantEarthquakeCount1d,
+    double MaxMagnitude1d,
+    double TotalEnergyJoules1d,
     int EarthquakeCount7d,
     int EarthquakeCount30d,
     int SignificantEarthquakeCount7d,
@@ -100,6 +104,12 @@ public sealed record CountryDailyFeatureDto(
     double ActivityRatio7dTo30d,
     double SignificantActivityRatio7dTo30d,
     double EnergyRatio7dTo30d,
+    double EtasRate1d,
+    double OmoriPressure3d,
+    double RecentEventDensity3d,
+    double RecentSignificantDensity7d,
+    double HoursSinceLastEvent,
+    double HoursSinceLastSignificant,
     int DaysSinceLastSignificant,
     double? Temperature2mMean,
     double? Temperature2mMax,
@@ -124,10 +134,23 @@ public sealed record FeatureInfluenceDto(
     double Weight,
     string Direction);
 
+public sealed record BaselineVariantDto(
+    string Key,
+    string Name,
+    bool IsReady,
+    string Summary,
+    double Accuracy,
+    double F1Score,
+    double AreaUnderRocCurve,
+    double AreaUnderPrecisionRecallCurve,
+    double LatestProbability,
+    bool LatestPrediction);
+
 public sealed record CountryBaselineClassificationDto(
     string CountryCode,
     string CountryName,
     bool IsReady,
+    string SelectedVariantKey,
     string ModelName,
     string Summary,
     int TotalSamples,
@@ -141,6 +164,7 @@ public sealed record CountryBaselineClassificationDto(
     double LatestProbability,
     bool LatestPrediction,
     DateOnly? LatestFeatureDate,
+    IReadOnlyList<BaselineVariantDto> Variants,
     IReadOnlyList<FeatureInfluenceDto> TopPositiveSignals,
     IReadOnlyList<FeatureInfluenceDto> TopNegativeSignals);
 

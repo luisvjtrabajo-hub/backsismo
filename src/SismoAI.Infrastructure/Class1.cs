@@ -615,15 +615,25 @@ public sealed class DashboardService(
             geomagneticByDate.TryGetValue(date, out var dayGeomagnetic);
             var events = dayEarthquakes ?? [];
             var geomagneticItems = dayGeomagnetic ?? [];
+            var window1Events = CollectWindowEvents(earthquakeByDate, date, 1);
             var window7Events = CollectWindowEvents(earthquakeByDate, date, 7);
             var window30Events = CollectWindowEvents(earthquakeByDate, date, 30);
+            var window3Events = CollectWindowEvents(earthquakeByDate, date, 3);
+            var significantCount1d = window1Events.Count(x => x.Magnitude >= 4.5);
             var significantCount7d = window7Events.Count(x => x.Magnitude >= 4.5);
             var significantCount30d = window30Events.Count(x => x.Magnitude >= 4.5);
+            var totalEnergy1d = Math.Round(window1Events.Sum(x => x.ApproximateEnergyJoules), 3);
             var totalEnergy7d = Math.Round(window7Events.Sum(x => x.ApproximateEnergyJoules), 3);
             var totalEnergy30d = Math.Round(window30Events.Sum(x => x.ApproximateEnergyJoules), 3);
             var activityRatio7dTo30d = ComputeWindowRatio(window7Events.Count / 7d, window30Events.Count / 30d);
             var significantActivityRatio7dTo30d = ComputeWindowRatio(significantCount7d / 7d, significantCount30d / 30d);
             var energyRatio7dTo30d = ComputeWindowRatio(totalEnergy7d / 7d, totalEnergy30d / 30d);
+            var etasRate1d = ComputeEtasLiteRate(window1Events, date);
+            var omoriPressure3d = ComputeOmoriPressure(window3Events, date);
+            var recentEventDensity3d = Math.Round(window3Events.Count / 3d, 4);
+            var recentSignificantDensity7d = Math.Round(significantCount7d / 7d, 4);
+            var hoursSinceLastEvent = ComputeHoursSinceLastEvent(earthquakeByDate, date);
+            var hoursSinceLastSignificant = ComputeHoursSinceLastSignificant(earthquakeByDate, date);
             var nextDate = date.AddDays(1);
             earthquakeByDate.TryGetValue(nextDate, out var nextDayEarthquakes);
             var nextEvents = nextDayEarthquakes ?? [];
@@ -638,6 +648,10 @@ public sealed class DashboardService(
                 events.Count == 0 ? 0 : Math.Round(events.Average(x => x.Magnitude), 3),
                 events.Count == 0 ? 0 : Math.Round(events.Average(x => x.DepthKm), 3),
                 Math.Round(events.Sum(x => x.ApproximateEnergyJoules), 3),
+                window1Events.Count,
+                significantCount1d,
+                window1Events.Count == 0 ? 0 : window1Events.Max(x => x.Magnitude),
+                totalEnergy1d,
                 window7Events.Count,
                 window30Events.Count,
                 significantCount7d,
@@ -654,6 +668,12 @@ public sealed class DashboardService(
                 activityRatio7dTo30d,
                 significantActivityRatio7dTo30d,
                 energyRatio7dTo30d,
+                etasRate1d,
+                omoriPressure3d,
+                recentEventDensity3d,
+                recentSignificantDensity7d,
+                hoursSinceLastEvent,
+                hoursSinceLastSignificant,
                 ComputeDaysSinceLastSignificant(earthquakeByDate, date),
                 dayClimate?.Temperature2mMean,
                 dayClimate?.Temperature2mMax,
@@ -679,6 +699,49 @@ public sealed class DashboardService(
             .ToList();
     }
 
+    private static double ComputeEtasLiteRate(IReadOnlyList<EarthquakeEvent> events, DateOnly date)
+    {
+        if (events.Count == 0)
+        {
+            return 0;
+        }
+
+        var endOfDayUtc = date.ToDateTime(TimeOnly.MaxValue, DateTimeKind.Utc);
+        const double productivityBase = 0.8;
+        const double magnitudeScale = 1.1;
+        const double timeOffsetDays = 0.05;
+        const double decay = 1.1;
+
+        var score = events.Sum(x =>
+        {
+            var elapsedDays = Math.Max(timeOffsetDays, (endOfDayUtc - x.OriginTimeUtc.UtcDateTime).TotalDays);
+            var productivity = Math.Exp(magnitudeScale * Math.Max(0, x.Magnitude - 3d));
+            return productivityBase * productivity / Math.Pow(elapsedDays + timeOffsetDays, decay);
+        });
+
+        return Math.Round(Math.Log10(score + 1), 6);
+    }
+
+    private static double ComputeOmoriPressure(IReadOnlyList<EarthquakeEvent> events, DateOnly date)
+    {
+        if (events.Count == 0)
+        {
+            return 0;
+        }
+
+        var endOfDayUtc = date.ToDateTime(TimeOnly.MaxValue, DateTimeKind.Utc);
+        const double timeOffsetDays = 0.03;
+        const double decay = 1.0;
+
+        var score = events.Sum(x =>
+        {
+            var elapsedDays = Math.Max(timeOffsetDays, (endOfDayUtc - x.OriginTimeUtc.UtcDateTime).TotalDays);
+            return Math.Max(0, x.Magnitude - 2.5d) / Math.Pow(elapsedDays + timeOffsetDays, decay);
+        });
+
+        return Math.Round(Math.Log10(score + 1), 6);
+    }
+
     private static List<EarthquakeEvent> CollectWindowEvents(
         IReadOnlyDictionary<DateOnly, List<EarthquakeEvent>> earthquakeByDate,
         DateOnly date,
@@ -694,6 +757,52 @@ public sealed class DashboardService(
         }
 
         return collected;
+    }
+
+    private static double ComputeHoursSinceLastEvent(
+        IReadOnlyDictionary<DateOnly, List<EarthquakeEvent>> earthquakeByDate,
+        DateOnly date)
+    {
+        var endOfDayUtc = date.ToDateTime(TimeOnly.MaxValue, DateTimeKind.Utc);
+
+        for (var offset = 0; offset <= 3650; offset++)
+        {
+            var candidateDate = date.AddDays(-offset);
+            if (earthquakeByDate.TryGetValue(candidateDate, out var items) && items.Count > 0)
+            {
+                var latest = items.Max(x => x.OriginTimeUtc.UtcDateTime);
+                return Math.Round(Math.Max(0, (endOfDayUtc - latest).TotalHours), 4);
+            }
+        }
+
+        return 3651 * 24;
+    }
+
+    private static double ComputeHoursSinceLastSignificant(
+        IReadOnlyDictionary<DateOnly, List<EarthquakeEvent>> earthquakeByDate,
+        DateOnly date)
+    {
+        var endOfDayUtc = date.ToDateTime(TimeOnly.MaxValue, DateTimeKind.Utc);
+
+        for (var offset = 0; offset <= 3650; offset++)
+        {
+            var candidateDate = date.AddDays(-offset);
+            if (earthquakeByDate.TryGetValue(candidateDate, out var items))
+            {
+                var latest = items
+                    .Where(x => x.Magnitude >= 4.5)
+                    .Select(x => x.OriginTimeUtc.UtcDateTime)
+                    .DefaultIfEmpty(DateTime.MinValue)
+                    .Max();
+
+                if (latest != DateTime.MinValue)
+                {
+                    return Math.Round(Math.Max(0, (endOfDayUtc - latest).TotalHours), 4);
+                }
+            }
+        }
+
+        return 3651 * 24;
     }
 
     private static int ComputeDaysSinceLastSignificant(
