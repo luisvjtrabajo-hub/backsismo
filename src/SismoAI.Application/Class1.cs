@@ -127,6 +127,8 @@ public sealed record CountryDailyFeatureDto(
     double? GeomagneticRangeF,
     double? GeomagneticMeanAbsDeltaF,
     int NextDayEarthquakeCount,
+    bool NextDayHadAnyEarthquake,
+    bool NextDayHadMagnitude4Earthquake,
     bool NextDayHadSignificantEarthquake);
 
 public sealed record FeatureInfluenceDto(
@@ -166,10 +168,32 @@ public sealed record BaselineVariantDto(
     bool LatestPrediction,
     ConfusionMatrixDto ConfusionMatrix);
 
+public sealed record BaselineTargetDto(
+    string Key,
+    string Name,
+    bool IsReady,
+    string Summary,
+    string SelectedVariantKey,
+    string SelectedVariantName,
+    double PositiveRate,
+    double DecisionThreshold,
+    double Accuracy,
+    double BalancedAccuracy,
+    double Precision,
+    double Recall,
+    double F1Score,
+    double MatthewsCorrelationCoefficient,
+    double AreaUnderPrecisionRecallCurve,
+    double BrierScore,
+    double LatestProbability,
+    bool LatestPrediction);
+
 public sealed record CountryBaselineClassificationDto(
     string CountryCode,
     string CountryName,
     bool IsReady,
+    string SelectedTargetKey,
+    string SelectedTargetName,
     string SelectedVariantKey,
     string ModelName,
     string Summary,
@@ -196,6 +220,7 @@ public sealed record CountryBaselineClassificationDto(
     bool LatestPrediction,
     DateOnly? LatestFeatureDate,
     ConfusionMatrixDto ConfusionMatrix,
+    IReadOnlyList<BaselineTargetDto> Targets,
     IReadOnlyList<BaselineVariantDto> Variants,
     IReadOnlyList<FeatureInfluenceDto> TopPositiveSignals,
     IReadOnlyList<FeatureInfluenceDto> TopNegativeSignals);

@@ -691,6 +691,8 @@ public sealed class DashboardService(
                 ComputeRange(geomagneticItems.Select(x => x.F)),
                 ComputeMeanAbsoluteDelta(geomagneticItems.Select(x => x.F)),
                 nextEvents.Count,
+                nextEvents.Count > 0,
+                nextEvents.Any(x => x.Magnitude >= 4.0),
                 nextEvents.Any(x => x.Magnitude >= 4.5)));
         }
 

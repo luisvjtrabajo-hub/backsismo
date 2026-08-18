@@ -9,8 +9,8 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
     private const string ComparisonModelName = "Comparativo baseline sismico multi-escala calibrado";
     private const int MinimumSamples = 120;
     private const int MinimumTrainingSamples = 60;
-    private const int MinimumValidationSamples = 20;
-    private const int MinimumTestSamples = 20;
+    private const int MinimumValidationSamples = 60;
+    private const int MinimumTestSamples = 60;
     private const double TrainingPositiveRatioTarget = 0.35;
     private const int CalibrationBinCount = 10;
     private const int MinimumPopulatedCalibrationBins = 3;
@@ -94,6 +94,25 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
             3)
     ];
 
+    private static readonly TargetDefinition[] TargetDefinitions =
+    [
+        new(
+            "next_day_any",
+            "Cualquier sismo al dia siguiente",
+            input => input.NextDayHadAnyEarthquake,
+            1),
+        new(
+            "next_day_m4_plus",
+            "Sismo M>=4.0 al dia siguiente",
+            input => input.NextDayHadMagnitude4Earthquake,
+            2),
+        new(
+            "next_day_m45_plus",
+            "Sismo M>=4.5 al dia siguiente",
+            input => input.NextDayHadSignificantEarthquake,
+            3)
+    ];
+
     public Task<CountryBaselineClassificationDto> BuildCountryBaselineAsync(
         string countryCode,
         string countryName,
@@ -114,9 +133,6 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         var labeledRows = allRows.Count > 1
             ? allRows.Take(allRows.Count - 1).ToList()
             : [];
-        var positiveRate = labeledRows.Count == 0
-            ? 0
-            : Math.Round(labeledRows.Count(x => x.Label) / (double)labeledRows.Count, 4);
 
         if (labeledRows.Count < MinimumSamples)
         {
@@ -124,38 +140,31 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
                 countryCode,
                 countryName,
                 latestFeatureDate,
-                labeledRows.Count,
-                positiveRate,
+                labeledRows,
                 $"Aun no hay suficientes muestras diarias etiquetadas para entrenar un baseline robusto de {countryName}."));
         }
 
-        var split = FindBestTemporalSplit(labeledRows);
-        var trainRows = labeledRows.Take(split.TrainingEndIndex).ToList();
-        var validationRows = labeledRows
-            .Skip(split.TrainingEndIndex)
-            .Take(split.ValidationEndIndex - split.TrainingEndIndex)
+        var targets = TargetDefinitions
+            .Select(target => BuildTargetResult(target, countryName, labeledRows, forecastRow))
             .ToList();
-        var testRows = labeledRows.Skip(split.ValidationEndIndex).ToList();
-
-        var variants = VariantDefinitions
-            .Select(definition => BuildVariantResult(definition, countryName, trainRows, validationRows, testRows, forecastRow))
-            .ToList();
-
-        var selected = SelectBestVariant(variants);
+        var selectedTarget = SelectBestTarget(targets);
+        var selected = selectedTarget.SelectedVariant;
 
         return Task.FromResult(new CountryBaselineClassificationDto(
             countryCode,
             countryName,
             selected.IsReady,
+            selectedTarget.Definition.Key,
+            selectedTarget.Definition.Name,
             selected.Definition.Key,
             ComparisonModelName,
-            BuildCountrySummary(countryName, selected, variants),
+            BuildCountrySummary(countryName, selectedTarget, targets),
             selected.CalibrationMethod,
-            labeledRows.Count,
-            trainRows.Count,
-            validationRows.Count,
-            testRows.Count,
-            positiveRate,
+            selectedTarget.TotalSamples,
+            selected.TrainingSamples,
+            selected.ValidationSamples,
+            selected.TestSamples,
+            selectedTarget.PositiveRate,
             selected.DecisionThreshold,
             selected.Accuracy,
             selected.BalancedAccuracy,
@@ -173,7 +182,8 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
             selected.LatestPrediction,
             latestFeatureDate,
             selected.ConfusionMatrix,
-            variants.Select(ToBaselineVariantDto).ToList(),
+            targets.Select(ToBaselineTargetDto).ToList(),
+            selectedTarget.Variants.Select(ToBaselineVariantDto).ToList(),
             selected.TopPositiveSignals,
             selected.TopNegativeSignals));
     }
@@ -182,8 +192,7 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         string countryCode,
         string countryName,
         DateOnly? latestFeatureDate,
-        int totalSamples,
-        double positiveRate,
+        IReadOnlyList<ModelInput> labeledRows,
         string summary)
     {
         var variants = VariantDefinitions
@@ -213,20 +222,43 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
                 false,
                 EmptyConfusionMatrix()))
             .ToList();
+        var targets = TargetDefinitions
+            .Select(target => new BaselineTargetDto(
+                target.Key,
+                target.Name,
+                false,
+                $"Todavia no hay suficiente historia etiquetada para evaluar el target {target.Name.ToLowerInvariant()} en {countryName}.",
+                VariantDefinitions[^1].Key,
+                VariantDefinitions[^1].Name,
+                ComputePositiveRate(labeledRows, target),
+                0.5,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                false))
+            .ToList();
 
         return new CountryBaselineClassificationDto(
             countryCode,
             countryName,
             false,
+            TargetDefinitions[^1].Key,
+            TargetDefinitions[^1].Name,
             VariantDefinitions[^1].Key,
             ComparisonModelName,
             summary,
             "Sin calibracion",
-            totalSamples,
+            labeledRows.Count,
             0,
             0,
             0,
-            positiveRate,
+            ComputePositiveRate(labeledRows, TargetDefinitions[^1]),
             0.5,
             0,
             0,
@@ -244,9 +276,145 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
             false,
             latestFeatureDate,
             EmptyConfusionMatrix(),
+            targets,
             variants,
             [],
             []);
+    }
+
+    private static TargetResult BuildTargetResult(
+        TargetDefinition target,
+        string countryName,
+        IReadOnlyList<ModelInput> labeledRows,
+        ModelInput? forecastRow)
+    {
+        var targetRows = labeledRows.Select(row => CloneForTarget(row, target)).ToList();
+        var split = FindBestTemporalSplit(targetRows);
+        var trainRows = targetRows.Take(split.TrainingEndIndex).ToList();
+        var validationRows = targetRows
+            .Skip(split.TrainingEndIndex)
+            .Take(split.ValidationEndIndex - split.TrainingEndIndex)
+            .ToList();
+        var testRows = targetRows.Skip(split.ValidationEndIndex).ToList();
+        var forecastTargetRow = forecastRow is null ? null : CloneForTarget(forecastRow, target);
+
+        var variants = VariantDefinitions
+            .Select(definition => BuildVariantResult(definition, countryName, trainRows, validationRows, testRows, forecastTargetRow))
+            .ToList();
+        var selectedVariant = SelectBestVariant(variants);
+        var positiveRate = ComputePositiveRate(targetRows, target);
+
+        return new TargetResult(
+            target,
+            selectedVariant,
+            variants,
+            targetRows.Count,
+            positiveRate);
+    }
+
+    private static BaselineTargetDto ToBaselineTargetDto(TargetResult target)
+    {
+        return new BaselineTargetDto(
+            target.Definition.Key,
+            target.Definition.Name,
+            target.SelectedVariant.IsReady,
+            target.SelectedVariant.Summary,
+            target.SelectedVariant.Definition.Key,
+            target.SelectedVariant.Definition.Name,
+            target.PositiveRate,
+            target.SelectedVariant.DecisionThreshold,
+            target.SelectedVariant.Accuracy,
+            target.SelectedVariant.BalancedAccuracy,
+            target.SelectedVariant.Precision,
+            target.SelectedVariant.Recall,
+            target.SelectedVariant.F1Score,
+            target.SelectedVariant.MatthewsCorrelationCoefficient,
+            target.SelectedVariant.AreaUnderPrecisionRecallCurve,
+            target.SelectedVariant.BrierScore,
+            target.SelectedVariant.LatestProbability,
+            target.SelectedVariant.LatestPrediction);
+    }
+
+    private static TargetResult SelectBestTarget(IReadOnlyList<TargetResult> targets)
+    {
+        return targets
+            .OrderByDescending(target => target.SelectedVariant.IsReady)
+            .ThenByDescending(target => target.SelectedVariant.MatthewsCorrelationCoefficient)
+            .ThenByDescending(target => target.SelectedVariant.AreaUnderPrecisionRecallCurve)
+            .ThenByDescending(target => target.SelectedVariant.BalancedAccuracy)
+            .ThenByDescending(target => target.SelectedVariant.Recall)
+            .ThenBy(target => target.Definition.Rank)
+            .First();
+    }
+
+    private static double ComputePositiveRate(IReadOnlyList<ModelInput> rows, TargetDefinition target)
+    {
+        if (rows.Count == 0)
+        {
+            return 0;
+        }
+
+        return Math.Round(rows.Count(row => target.Selector(row)) / (double)rows.Count, 4);
+    }
+
+    private static ModelInput CloneForTarget(ModelInput source, TargetDefinition target)
+    {
+        return new ModelInput
+        {
+            Date = source.Date,
+            EarthquakeCount = source.EarthquakeCount,
+            SignificantEarthquakeCount = source.SignificantEarthquakeCount,
+            MaxMagnitude = source.MaxMagnitude,
+            MeanMagnitude = source.MeanMagnitude,
+            MeanDepthKm = source.MeanDepthKm,
+            TotalEnergyJoules = source.TotalEnergyJoules,
+            EarthquakeCount1d = source.EarthquakeCount1d,
+            SignificantEarthquakeCount1d = source.SignificantEarthquakeCount1d,
+            MaxMagnitude1d = source.MaxMagnitude1d,
+            TotalEnergyJoules1d = source.TotalEnergyJoules1d,
+            EarthquakeCount7d = source.EarthquakeCount7d,
+            EarthquakeCount30d = source.EarthquakeCount30d,
+            SignificantEarthquakeCount7d = source.SignificantEarthquakeCount7d,
+            SignificantEarthquakeCount30d = source.SignificantEarthquakeCount30d,
+            MaxMagnitude7d = source.MaxMagnitude7d,
+            MaxMagnitude30d = source.MaxMagnitude30d,
+            MeanMagnitude7d = source.MeanMagnitude7d,
+            MeanMagnitude30d = source.MeanMagnitude30d,
+            TotalEnergyJoules7d = source.TotalEnergyJoules7d,
+            TotalEnergyJoules30d = source.TotalEnergyJoules30d,
+            BValue30d = source.BValue30d,
+            SignificantRate7d = source.SignificantRate7d,
+            SignificantRate30d = source.SignificantRate30d,
+            ActivityRatio7dTo30d = source.ActivityRatio7dTo30d,
+            SignificantActivityRatio7dTo30d = source.SignificantActivityRatio7dTo30d,
+            EnergyRatio7dTo30d = source.EnergyRatio7dTo30d,
+            EtasRate1d = source.EtasRate1d,
+            OmoriPressure3d = source.OmoriPressure3d,
+            RecentEventDensity3d = source.RecentEventDensity3d,
+            RecentSignificantDensity7d = source.RecentSignificantDensity7d,
+            HoursSinceLastEvent = source.HoursSinceLastEvent,
+            HoursSinceLastSignificant = source.HoursSinceLastSignificant,
+            DaysSinceLastSignificant = source.DaysSinceLastSignificant,
+            Temperature2mMean = source.Temperature2mMean,
+            Temperature2mMax = source.Temperature2mMax,
+            Temperature2mMin = source.Temperature2mMin,
+            PrecipitationSum = source.PrecipitationSum,
+            PressureMslMean = source.PressureMslMean,
+            RelativeHumidity2mMean = source.RelativeHumidity2mMean,
+            WindSpeed10mMean = source.WindSpeed10mMean,
+            SoilMoisture0To10cmMean = source.SoilMoisture0To10cmMean,
+            ShortwaveRadiationSum = source.ShortwaveRadiationSum,
+            GeomagneticSampleCount = source.GeomagneticSampleCount,
+            GeomagneticRangeX = source.GeomagneticRangeX,
+            GeomagneticRangeY = source.GeomagneticRangeY,
+            GeomagneticRangeZ = source.GeomagneticRangeZ,
+            GeomagneticRangeF = source.GeomagneticRangeF,
+            GeomagneticMeanAbsDeltaF = source.GeomagneticMeanAbsDeltaF,
+            NextDayHadAnyEarthquake = source.NextDayHadAnyEarthquake,
+            NextDayHadMagnitude4Earthquake = source.NextDayHadMagnitude4Earthquake,
+            NextDayHadSignificantEarthquake = source.NextDayHadSignificantEarthquake,
+            Label = target.Selector(source)
+        };
     }
 
     private static VariantResult BuildVariantResult(
@@ -458,17 +626,17 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
 
     private static string BuildCountrySummary(
         string countryName,
-        VariantResult selected,
-        IReadOnlyList<VariantResult> variants)
+        TargetResult selectedTarget,
+        IReadOnlyList<TargetResult> targets)
     {
-        var readyVariants = variants.Where(x => x.IsReady).ToList();
-        if (readyVariants.Count == 0)
+        var readyTargets = targets.Where(x => x.SelectedVariant.IsReady).ToList();
+        if (readyTargets.Count == 0)
         {
-            return $"{selected.Summary} Aun no hay suficiente diversidad de clases en test para validar bien el baseline de {countryName}.";
+            return $"{selectedTarget.SelectedVariant.Summary} Aun no hay suficiente diversidad de clases en test para validar bien el baseline de {countryName}.";
         }
 
-        var trivialAccuracy = 1d - readyVariants.Max(x => x.TestPositiveRate);
-        return $"{selected.Summary} En el comparativo, {selected.Definition.Name.ToLowerInvariant()} fue la variante mas fuerte para {countryName}. " +
+        var trivialAccuracy = 1d - readyTargets.Max(x => x.SelectedVariant.TestPositiveRate);
+        return $"{selectedTarget.SelectedVariant.Summary} En el comparativo, {selectedTarget.SelectedVariant.Definition.Name.ToLowerInvariant()} fue la variante mas fuerte para {countryName} en el target {selectedTarget.Definition.Name.ToLowerInvariant()}. " +
                $"Como referencia, un baseline trivial de 'no habra sismo significativo' rondaria {trivialAccuracy:P1} de accuracy y F1 0.0%.";
     }
 
@@ -949,6 +1117,9 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
             GeomagneticRangeZ = (float)(feature.GeomagneticRangeZ ?? 0),
             GeomagneticRangeF = (float)(feature.GeomagneticRangeF ?? 0),
             GeomagneticMeanAbsDeltaF = (float)(feature.GeomagneticMeanAbsDeltaF ?? 0),
+            NextDayHadAnyEarthquake = feature.NextDayHadAnyEarthquake,
+            NextDayHadMagnitude4Earthquake = feature.NextDayHadMagnitude4Earthquake,
+            NextDayHadSignificantEarthquake = feature.NextDayHadSignificantEarthquake,
             Label = feature.NextDayHadSignificantEarthquake
         };
     }
@@ -1075,6 +1246,19 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         string Name,
         string[] FeatureColumns,
         int Rank);
+
+    private sealed record TargetDefinition(
+        string Key,
+        string Name,
+        Func<ModelInput, bool> Selector,
+        int Rank);
+
+    private sealed record TargetResult(
+        TargetDefinition Definition,
+        VariantResult SelectedVariant,
+        IReadOnlyList<VariantResult> Variants,
+        int TotalSamples,
+        double PositiveRate);
 
     private sealed record VariantResult(
         VariantDefinition Definition,
@@ -1224,6 +1408,9 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         public float GeomagneticRangeZ { get; set; }
         public float GeomagneticRangeF { get; set; }
         public float GeomagneticMeanAbsDeltaF { get; set; }
+        public bool NextDayHadAnyEarthquake { get; set; }
+        public bool NextDayHadMagnitude4Earthquake { get; set; }
+        public bool NextDayHadSignificantEarthquake { get; set; }
         public bool Label { get; set; }
     }
 
