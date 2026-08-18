@@ -446,6 +446,7 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
     {
         return variants
             .OrderByDescending(variant => variant.IsReady)
+            .ThenByDescending(variant => HasBidirectionalPredictions(variant.ConfusionMatrix))
             .ThenByDescending(variant => variant.MatthewsCorrelationCoefficient)
             .ThenByDescending(variant => variant.AreaUnderPrecisionRecallCurve)
             .ThenByDescending(variant => variant.F1Score)
@@ -616,8 +617,10 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
                 var evaluation = EvaluatePredictions(null, validationScored, threshold);
                 return new ThresholdSelection(
                     threshold,
+                    HasBidirectionalPredictions(evaluation.ConfusionMatrix),
                     evaluation.Precision,
                     evaluation.Recall,
+                    evaluation.Specificity,
                     evaluation.F1Score,
                     evaluation.BalancedAccuracy,
                     evaluation.MatthewsCorrelationCoefficient,
@@ -627,13 +630,15 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
             .ToList();
 
         return candidates
-            .OrderByDescending(x => x.TruePositiveCount > 0)
+            .OrderByDescending(x => x.HasBidirectionalPredictions)
+            .ThenByDescending(x => x.TruePositiveCount > 0)
             .ThenByDescending(x => x.MatthewsCorrelationCoefficient)
-            .ThenByDescending(x => x.F1Score)
             .ThenByDescending(x => x.BalancedAccuracy)
+            .ThenByDescending(x => x.Specificity)
+            .ThenByDescending(x => x.F1Score)
             .ThenByDescending(x => x.Recall)
             .ThenByDescending(x => x.Precision)
-            .ThenBy(x => x.Threshold)
+            .ThenByDescending(x => x.Threshold)
             .First();
     }
 
@@ -877,6 +882,13 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         }
 
         return "En esta ventana de test el modelo si diferencio entre positivos y negativos";
+    }
+
+    private static bool HasBidirectionalPredictions(ConfusionMatrixDto confusionMatrix)
+    {
+        var predictedPositive = confusionMatrix.TruePositives + confusionMatrix.FalsePositives;
+        var predictedNegative = confusionMatrix.TrueNegatives + confusionMatrix.FalseNegatives;
+        return predictedPositive > 0 && predictedNegative > 0;
     }
 
     private static ConfusionMatrixDto EmptyConfusionMatrix()
@@ -1126,8 +1138,10 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
 
     private sealed record ThresholdSelection(
         double Threshold,
+        bool HasBidirectionalPredictions,
         double Precision,
         double Recall,
+        double Specificity,
         double F1Score,
         double BalancedAccuracy,
         double MatthewsCorrelationCoefficient,
