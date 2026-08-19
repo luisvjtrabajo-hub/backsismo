@@ -14,6 +14,10 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
     private const double TrainingPositiveRatioTarget = 0.35;
     private const int CalibrationBinCount = 10;
     private const int MinimumPopulatedCalibrationBins = 3;
+    private const int MinimumConclusiveTestPositives = 5;
+    private const int MinimumConclusiveTestNegatives = 5;
+    private const double MinimumDecisionThreshold = 0.01;
+    private const double MaximumDecisionThreshold = 0.99;
 
     private static readonly string[] SeismicFeatureColumns =
     [
@@ -342,10 +346,13 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
     private static TargetResult SelectBestTarget(IReadOnlyList<TargetResult> targets)
     {
         return targets
-            .OrderByDescending(target => target.SelectedVariant.IsReady)
+            .OrderByDescending(target => IsOperationallyUseful(target.SelectedVariant))
+            .ThenByDescending(target => target.SelectedVariant.IsReady)
+            .ThenByDescending(target => HasMinimumTestClassMix(target.SelectedVariant.ConfusionMatrix))
+            .ThenByDescending(target => HasBidirectionalPredictions(target.SelectedVariant.ConfusionMatrix))
             .ThenByDescending(target => target.SelectedVariant.MatthewsCorrelationCoefficient)
-            .ThenByDescending(target => target.SelectedVariant.AreaUnderPrecisionRecallCurve)
             .ThenByDescending(target => target.SelectedVariant.BalancedAccuracy)
+            .ThenByDescending(target => target.SelectedVariant.AreaUnderPrecisionRecallCurve)
             .ThenByDescending(target => target.SelectedVariant.Recall)
             .ThenBy(target => target.Definition.Rank)
             .First();
@@ -509,10 +516,17 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
 
         var testScored = ApplyCalibration(ScoreRows(mlContext, model, testRows), calibrator);
         var evaluation = EvaluatePredictions(mlContext, testScored, thresholdSelection.Threshold);
-        var isReady = HasBothClasses(testRows);
-        var summary = isReady
-            ? BuildReadySummary(countryName, definition.Name, trainRows.Count, validationRows.Count, testRows.Count, thresholdSelection.Threshold, calibrator.Description, evaluation)
-            : BuildLimitedTestSummary(countryName, definition.Name, trainRows.Count, validationRows.Count, testRows.Count, thresholdSelection.Threshold, calibrator.Description, evaluation);
+        var hasBothClassesInTest = HasBothClasses(testRows);
+        var hasMinimumTestMix = HasMinimumTestClassMix(evaluation.ConfusionMatrix);
+        var isOperationallyUseful = HasActionableDiscrimination(evaluation);
+        var isReady = hasBothClassesInTest && hasMinimumTestMix && isOperationallyUseful;
+        var summary = !hasBothClassesInTest
+            ? BuildLimitedTestSummary(countryName, definition.Name, trainRows.Count, validationRows.Count, testRows.Count, thresholdSelection.Threshold, calibrator.Description, evaluation)
+            : !hasMinimumTestMix
+                ? BuildInconclusiveTestSummary(countryName, definition.Name, trainRows.Count, validationRows.Count, testRows.Count, thresholdSelection.Threshold, calibrator.Description, evaluation)
+                : !isOperationallyUseful
+                    ? BuildDegenerateTestSummary(countryName, definition.Name, trainRows.Count, validationRows.Count, testRows.Count, thresholdSelection.Threshold, calibrator.Description, evaluation)
+                    : BuildReadySummary(countryName, definition.Name, trainRows.Count, validationRows.Count, testRows.Count, thresholdSelection.Threshold, calibrator.Description, evaluation);
 
         return new VariantResult(
             definition,
@@ -615,12 +629,14 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
     private static VariantResult SelectBestVariant(IReadOnlyList<VariantResult> variants)
     {
         return variants
-            .OrderByDescending(variant => variant.IsReady)
+            .OrderByDescending(IsOperationallyUseful)
+            .ThenByDescending(variant => variant.IsReady)
+            .ThenByDescending(variant => HasMinimumTestClassMix(variant.ConfusionMatrix))
             .ThenByDescending(variant => HasBidirectionalPredictions(variant.ConfusionMatrix))
             .ThenByDescending(variant => variant.MatthewsCorrelationCoefficient)
+            .ThenByDescending(variant => variant.BalancedAccuracy)
             .ThenByDescending(variant => variant.AreaUnderPrecisionRecallCurve)
             .ThenByDescending(variant => variant.F1Score)
-            .ThenByDescending(variant => variant.BalancedAccuracy)
             .ThenByDescending(variant => variant.Recall)
             .ThenByDescending(variant => variant.Definition.Rank)
             .First();
@@ -631,15 +647,14 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         TargetResult selectedTarget,
         IReadOnlyList<TargetResult> targets)
     {
-        var readyTargets = targets.Where(x => x.SelectedVariant.IsReady).ToList();
-        if (readyTargets.Count == 0)
+        var usefulTargets = targets.Where(x => IsOperationallyUseful(x.SelectedVariant)).ToList();
+        if (usefulTargets.Count == 0)
         {
-            return $"{selectedTarget.SelectedVariant.Summary} Aun no hay suficiente diversidad de clases en test para validar bien el baseline de {countryName}.";
+            return $"{selectedTarget.SelectedVariant.Summary} Ningun target supero de forma concluyente a los baselines triviales para {countryName}; conviene leer estas metricas como exploratorias y no operativas. {BuildTrivialBaselineSummary(selectedTarget.SelectedVariant.ConfusionMatrix)}";
         }
 
-        var trivialAccuracy = 1d - readyTargets.Max(x => x.SelectedVariant.TestPositiveRate);
         return $"{selectedTarget.SelectedVariant.Summary} En el comparativo, {selectedTarget.SelectedVariant.Definition.Name.ToLowerInvariant()} fue la variante mas fuerte para {countryName} en el target {selectedTarget.Definition.Name.ToLowerInvariant()}. " +
-               $"Como referencia, un baseline trivial de 'no habra sismo significativo' rondaria {trivialAccuracy:P1} de accuracy y F1 0.0%.";
+               $"{BuildTrivialBaselineSummary(selectedTarget.SelectedVariant.ConfusionMatrix)}";
     }
 
     private static TemporalSplit FindBestTemporalSplit(IReadOnlyList<ModelInput> rows)
@@ -888,8 +903,8 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         var fixedThresholds = Enumerable.Range(1, 50).Select(index => Math.Round(index / 100d, 4))
             .Concat(Enumerable.Range(11, 8).Select(index => Math.Round(index / 20d, 4)));
         var probabilityThresholds = scoredRows
-            .Select(x => Math.Round(x.Probability, 4))
-            .Where(x => x > 0 && x < 1);
+            .Select(x => Math.Round(Math.Clamp(x.Probability, MinimumDecisionThreshold, MaximumDecisionThreshold), 4))
+            .Where(x => x >= MinimumDecisionThreshold && x <= MaximumDecisionThreshold);
 
         return fixedThresholds
             .Concat(probabilityThresholds)
@@ -1048,11 +1063,10 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         EvaluationMetrics evaluation)
     {
         var tendency = evaluation.Recall > 0 ? "logra recuperar parte de los positivos" : "sigue sin recuperar positivos";
-        var trivialAccuracy = 1d - evaluation.PositiveRate;
         var predictionPattern = DescribePredictionPattern(evaluation.ConfusionMatrix);
         return $"La variante {variantName.ToLowerInvariant()} de {countryName} se entreno con {trainCount} dias, ajusto el threshold en validacion temporal ({validationCount} dias) y se evaluo en test ({testCount} dias). " +
                $"Uso threshold {threshold:P1}; en test logro PR AUC {evaluation.AreaUnderPrecisionRecallCurve:P1}, ROC AUC {evaluation.AreaUnderRocCurve:P1}, recall {evaluation.Recall:P1}, precision {evaluation.Precision:P1}, F1 {evaluation.F1Score:P1}, balanced accuracy {evaluation.BalancedAccuracy:P1} y MCC {evaluation.MatthewsCorrelationCoefficient:F3}. " +
-               $"Frente al baseline trivial de 'no habra sismo significativo' ({trivialAccuracy:P1} accuracy y F1 0.0%), {tendency}. {predictionPattern}. {calibrationMethod}.";
+               $"{BuildTrivialBaselineSummary(evaluation.ConfusionMatrix)} {tendency}. {predictionPattern}. {calibrationMethod}.";
     }
 
     private static string BuildInsufficientTrainingSummary(
@@ -1107,6 +1121,37 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
                $"pero el test no tuvo ambas clases. Se reportan solo metricas de clasificacion disponibles: recall {evaluation.Recall:P1}, precision {evaluation.Precision:P1}, F1 {evaluation.F1Score:P1}, balanced accuracy {evaluation.BalancedAccuracy:P1} y MCC {evaluation.MatthewsCorrelationCoefficient:F3}. {predictionPattern}. {calibrationMethod}.";
     }
 
+    private static string BuildInconclusiveTestSummary(
+        string countryName,
+        string variantName,
+        int trainCount,
+        int validationCount,
+        int testCount,
+        double threshold,
+        string calibrationMethod,
+        EvaluationMetrics evaluation)
+    {
+        var positiveCount = GetPositiveCount(evaluation.ConfusionMatrix);
+        var negativeCount = GetNegativeCount(evaluation.ConfusionMatrix);
+        return $"La variante {variantName.ToLowerInvariant()} de {countryName} se entreno con {trainCount} dias, ajusto threshold {threshold:P1} con validacion temporal ({validationCount} dias) y se evaluo en test ({testCount} dias), " +
+               $"pero esa ventana no es concluyente porque solo contiene {positiveCount} positivos y {negativeCount} negativos. {BuildTrivialBaselineSummary(evaluation.ConfusionMatrix)} {DescribePredictionPattern(evaluation.ConfusionMatrix)}. {calibrationMethod}.";
+    }
+
+    private static string BuildDegenerateTestSummary(
+        string countryName,
+        string variantName,
+        int trainCount,
+        int validationCount,
+        int testCount,
+        double threshold,
+        string calibrationMethod,
+        EvaluationMetrics evaluation)
+    {
+        return $"La variante {variantName.ToLowerInvariant()} de {countryName} se entreno con {trainCount} dias, ajusto threshold {threshold:P1} con validacion temporal ({validationCount} dias) y se evaluo en test ({testCount} dias), " +
+               $"pero el resultado sigue siendo degenerado para uso operativo: balanced accuracy {evaluation.BalancedAccuracy:P1}, MCC {evaluation.MatthewsCorrelationCoefficient:F3}, recall {evaluation.Recall:P1} y precision {evaluation.Precision:P1}. " +
+               $"{BuildTrivialBaselineSummary(evaluation.ConfusionMatrix)} {DescribePredictionPattern(evaluation.ConfusionMatrix)}. {calibrationMethod}.";
+    }
+
     private static string DescribePredictionPattern(ConfusionMatrixDto confusionMatrix)
     {
         var predictedPositive = confusionMatrix.TruePositives + confusionMatrix.FalsePositives;
@@ -1130,6 +1175,53 @@ public sealed class BaselinePeruMachineLearningService : IMachineLearningService
         var predictedPositive = confusionMatrix.TruePositives + confusionMatrix.FalsePositives;
         var predictedNegative = confusionMatrix.TrueNegatives + confusionMatrix.FalseNegatives;
         return predictedPositive > 0 && predictedNegative > 0;
+    }
+
+    private static bool HasMinimumTestClassMix(ConfusionMatrixDto confusionMatrix)
+    {
+        return GetPositiveCount(confusionMatrix) >= MinimumConclusiveTestPositives &&
+               GetNegativeCount(confusionMatrix) >= MinimumConclusiveTestNegatives;
+    }
+
+    private static bool HasActionableDiscrimination(EvaluationMetrics evaluation)
+    {
+        return evaluation.MatthewsCorrelationCoefficient > 0 &&
+               evaluation.BalancedAccuracy > 0.5 &&
+               HasBidirectionalPredictions(evaluation.ConfusionMatrix);
+    }
+
+    private static bool IsOperationallyUseful(VariantResult variant)
+    {
+        return variant.IsReady &&
+               variant.MatthewsCorrelationCoefficient > 0 &&
+               variant.BalancedAccuracy > 0.5 &&
+               HasMinimumTestClassMix(variant.ConfusionMatrix) &&
+               HasBidirectionalPredictions(variant.ConfusionMatrix);
+    }
+
+    private static int GetPositiveCount(ConfusionMatrixDto confusionMatrix)
+    {
+        return confusionMatrix.TruePositives + confusionMatrix.FalseNegatives;
+    }
+
+    private static int GetNegativeCount(ConfusionMatrixDto confusionMatrix)
+    {
+        return confusionMatrix.TrueNegatives + confusionMatrix.FalsePositives;
+    }
+
+    private static string BuildTrivialBaselineSummary(ConfusionMatrixDto confusionMatrix)
+    {
+        var total = GetPositiveCount(confusionMatrix) + GetNegativeCount(confusionMatrix);
+        if (total == 0)
+        {
+            return "Como referencia, aun no hay base suficiente para comparar contra baselines triviales.";
+        }
+
+        var positiveRate = GetPositiveCount(confusionMatrix) / (double)total;
+        var alwaysNegativeAccuracy = 1d - positiveRate;
+        var alwaysPositiveAccuracy = positiveRate;
+        var alwaysPositiveF1 = positiveRate == 0 ? 0 : (2d * positiveRate) / (1d + positiveRate);
+        return $"Como referencia, los baselines triviales del test son: 'no habra evento del target' ({alwaysNegativeAccuracy:P1} accuracy, F1 0.0%) y 'siempre habra evento del target' ({alwaysPositiveAccuracy:P1} accuracy, F1 {alwaysPositiveF1:P1}).";
     }
 
     private static ConfusionMatrixDto EmptyConfusionMatrix()

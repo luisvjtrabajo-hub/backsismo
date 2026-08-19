@@ -74,6 +74,11 @@ public sealed record DashboardSnapshotDto(
     IReadOnlyList<CountryBaselineClassificationDto> GlobalMachineLearning,
     DateTimeOffset GeneratedAtUtc);
 
+public sealed record DashboardMachineLearningSnapshotDto(
+    CountryBaselineClassificationDto PeruMachineLearning,
+    IReadOnlyList<CountryBaselineClassificationDto> GlobalMachineLearning,
+    DateTimeOffset GeneratedAtUtc);
+
 public sealed record CountryDailyFeatureDto(
     string CountryCode,
     string CountryName,
@@ -321,7 +326,8 @@ public interface IAnalyticsEngine
 
 public interface IDashboardService
 {
-    Task<DashboardSnapshotDto> GetSnapshotAsync(CancellationToken cancellationToken);
+    Task<DashboardSnapshotDto> GetSnapshotAsync(bool includeMachineLearning, CancellationToken cancellationToken);
+    Task<DashboardMachineLearningSnapshotDto> GetMachineLearningSnapshotAsync(CancellationToken cancellationToken);
     Task<IReadOnlyList<CountryDailyFeatureDto>> GetCountryDailyFeaturesAsync(string countryCode, int days, CancellationToken cancellationToken);
 }
 
@@ -337,4 +343,5 @@ public interface IMachineLearningService
 public interface IRealtimeNotifier
 {
     Task PublishDashboardAsync(DashboardSnapshotDto snapshot, CancellationToken cancellationToken);
+    Task PublishDashboardMachineLearningAsync(DashboardMachineLearningSnapshotDto snapshot, CancellationToken cancellationToken);
 }

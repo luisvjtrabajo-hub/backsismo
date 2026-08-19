@@ -10,7 +10,14 @@ public sealed class DashboardController(IDashboardService dashboardService) : Co
     [HttpGet]
     public async Task<ActionResult<DashboardSnapshotDto>> Get(CancellationToken cancellationToken)
     {
-        var snapshot = await dashboardService.GetSnapshotAsync(cancellationToken);
+        var snapshot = await dashboardService.GetSnapshotAsync(includeMachineLearning: false, cancellationToken);
+        return Ok(snapshot);
+    }
+
+    [HttpGet("ml")]
+    public async Task<ActionResult<DashboardMachineLearningSnapshotDto>> GetMachineLearning(CancellationToken cancellationToken)
+    {
+        var snapshot = await dashboardService.GetMachineLearningSnapshotAsync(cancellationToken);
         return Ok(snapshot);
     }
 

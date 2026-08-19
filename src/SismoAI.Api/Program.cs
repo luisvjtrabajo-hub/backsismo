@@ -98,6 +98,11 @@ public sealed class SignalRRealtimeNotifier(IHubContext<DashboardHub> hubContext
     {
         return hubContext.Clients.All.SendAsync("dashboardUpdated", snapshot, cancellationToken);
     }
+
+    public Task PublishDashboardMachineLearningAsync(DashboardMachineLearningSnapshotDto snapshot, CancellationToken cancellationToken)
+    {
+        return hubContext.Clients.All.SendAsync("dashboardMachineLearningUpdated", snapshot, cancellationToken);
+    }
 }
 
 internal static class CorsOriginHelper

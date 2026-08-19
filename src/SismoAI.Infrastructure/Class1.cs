@@ -467,7 +467,7 @@ public sealed class DashboardService(
         ChileDefinition
     ];
 
-    public async Task<DashboardSnapshotDto> GetSnapshotAsync(CancellationToken cancellationToken)
+    public async Task<DashboardSnapshotDto> GetSnapshotAsync(bool includeMachineLearning, CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
         var recent = await earthquakeRepository.GetSinceAsync(now.AddDays(-7), cancellationToken);
@@ -521,23 +521,9 @@ public sealed class DashboardService(
                 JsonSerializer.Deserialize<List<string>>(latestSnapshot.DriversJson) ?? []);
         var peruRecent = recent.Where(x => IsCountryEvent(x, PeruDefinition)).ToList();
         var peruAnalytics = analyticsEngine.Analyze(peruRecent.Take(50).ToList());
-            var peruDailyFeatures = await GetCountryDailyFeaturesAsync(PeruDefinition.Code, 3650, cancellationToken);
-        var peruMachineLearning = await machineLearningService.BuildCountryBaselineAsync(
-            PeruDefinition.Code,
-            PeruDefinition.Name,
-            peruDailyFeatures,
-            cancellationToken);
-        var globalMachineLearning = new List<CountryBaselineClassificationDto>(MachineLearningCountries.Length);
-        foreach (var country in MachineLearningCountries)
-        {
-            var features = country.Code == PeruDefinition.Code
-                ? peruDailyFeatures
-                : await GetCountryDailyFeaturesAsync(country.Code, 3650, cancellationToken);
-            var baseline = country.Code == PeruDefinition.Code
-                ? peruMachineLearning
-                : await machineLearningService.BuildCountryBaselineAsync(country.Code, country.Name, features, cancellationToken);
-            globalMachineLearning.Add(baseline);
-        }
+        var machineLearningSnapshot = includeMachineLearning
+            ? await GetMachineLearningSnapshotAsync(cancellationToken)
+            : BuildPendingMachineLearningSnapshot(now);
 
         return new DashboardSnapshotDto(
             latestEvents,
@@ -557,9 +543,100 @@ public sealed class DashboardService(
             peruAnalytics.Level,
             peruAnalytics.Summary,
             peruAnalytics.Drivers,
+            machineLearningSnapshot.PeruMachineLearning,
+            machineLearningSnapshot.GlobalMachineLearning,
+            now);
+    }
+
+    public async Task<DashboardMachineLearningSnapshotDto> GetMachineLearningSnapshotAsync(CancellationToken cancellationToken)
+    {
+        var countryFeatureTasks = MachineLearningCountries
+            .Select(async country => new
+            {
+                Country = country,
+                Features = await GetCountryDailyFeaturesAsync(country.Code, 3650, cancellationToken)
+            })
+            .ToArray();
+
+        var countryFeatures = await Task.WhenAll(countryFeatureTasks);
+        var baselineTasks = countryFeatures
+            .Select(async item => new
+            {
+                item.Country.Code,
+                Baseline = await machineLearningService.BuildCountryBaselineAsync(
+                    item.Country.Code,
+                    item.Country.Name,
+                    item.Features,
+                    cancellationToken)
+            })
+            .ToArray();
+
+        var baselines = await Task.WhenAll(baselineTasks);
+        var baselineByCountry = baselines.ToDictionary(x => x.Code, x => x.Baseline, StringComparer.OrdinalIgnoreCase);
+        var peruMachineLearning = baselineByCountry[PeruDefinition.Code];
+        var globalMachineLearning = MachineLearningCountries
+            .Select(country => baselineByCountry[country.Code])
+            .ToList();
+
+        return new DashboardMachineLearningSnapshotDto(
             peruMachineLearning,
             globalMachineLearning,
-            now);
+            DateTimeOffset.UtcNow);
+    }
+
+    private static DashboardMachineLearningSnapshotDto BuildPendingMachineLearningSnapshot(DateTimeOffset generatedAtUtc)
+    {
+        var peru = BuildPendingBaseline(PeruDefinition.Code, PeruDefinition.Name);
+        var global = MachineLearningCountries
+            .Select(country => country.Code == PeruDefinition.Code
+                ? peru
+                : BuildPendingBaseline(country.Code, country.Name))
+            .ToList();
+
+        return new DashboardMachineLearningSnapshotDto(
+            peru,
+            global,
+            generatedAtUtc);
+    }
+
+    private static CountryBaselineClassificationDto BuildPendingBaseline(string countryCode, string countryName)
+    {
+        return new CountryBaselineClassificationDto(
+            CountryCode: countryCode,
+            CountryName: countryName,
+            IsReady: false,
+            SelectedTargetKey: "loading",
+            SelectedTargetName: "Cargando ML",
+            SelectedVariantKey: "loading",
+            ModelName: "Comparativo baseline sismico multi-escala calibrado",
+            Summary: $"Calculando baseline ML de {countryName}.",
+            CalibrationMethod: "Pendiente",
+            TotalSamples: 0,
+            TrainingSamples: 0,
+            ValidationSamples: 0,
+            TestSamples: 0,
+            PositiveRate: 0,
+            DecisionThreshold: 0.5,
+            Accuracy: 0,
+            BalancedAccuracy: 0,
+            Precision: 0,
+            Recall: 0,
+            Specificity: 0,
+            F1Score: 0,
+            MatthewsCorrelationCoefficient: 0,
+            AreaUnderRocCurve: 0,
+            AreaUnderPrecisionRecallCurve: 0,
+            BrierScore: 0,
+            LogLoss: 0,
+            CalibrationError: 0,
+            LatestProbability: 0,
+            LatestPrediction: false,
+            LatestFeatureDate: null,
+            ConfusionMatrix: new ConfusionMatrixDto(0, 0, 0, 0),
+            Targets: [],
+            Variants: [],
+            TopPositiveSignals: [],
+            TopNegativeSignals: []);
     }
 
     public async Task<IReadOnlyList<CountryDailyFeatureDto>> GetCountryDailyFeaturesAsync(string countryCode, int days, CancellationToken cancellationToken)
@@ -1169,8 +1246,10 @@ public sealed class EarthquakeIngestionWorker(
         await earthquakeRepository.UpdateAnomalyScoreForRecentAsync(analytics.AnomalyScore, DateTimeOffset.UtcNow.AddHours(-24), cancellationToken);
         await monitoringRepository.SaveChangesAsync(cancellationToken);
 
-        var snapshot = await dashboardService.GetSnapshotAsync(cancellationToken);
+        var snapshot = await dashboardService.GetSnapshotAsync(includeMachineLearning: false, cancellationToken);
         await realtimeNotifier.PublishDashboardAsync(snapshot, cancellationToken);
+        var machineLearningSnapshot = await dashboardService.GetMachineLearningSnapshotAsync(cancellationToken);
+        await realtimeNotifier.PublishDashboardMachineLearningAsync(machineLearningSnapshot, cancellationToken);
     }
 
     private static double ApproximateEnergy(double magnitude)
